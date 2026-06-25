@@ -1,0 +1,34 @@
+# Specify internal scaffolding (not needed in public repo)
+.specify/
+
+# Runtime agent memory (project-specific, never commit)
+memory/
+
+# Fine-tuning artifacts (large files, dataset-specific)
+data/finetune/
+adapters/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+.env
+
+# Ollama models volume (managed by Docker)
+ollama_models/
+
+# Langfuse volumes (self-hosted Docker)
+langfuse_postgres/
+langfuse_clickhouse/
+
+# Test artifacts
+.pytest_cache/
+htmlcov/
+.coverage
+
+# macOS
+.DS_Store

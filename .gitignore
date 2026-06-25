@@ -1,5 +1,6 @@
 # Specify internal scaffolding (not needed in public repo)
 .specify/
+session-summary.md
 
 # Runtime agent memory (project-specific, never commit)
 # /memory/ = top-level only; sr_agent/memory/ is source code and IS tracked
@@ -33,6 +34,21 @@ htmlcov/
 
 # Research paper PDFs — tracked locally, not committed (large binaries)
 research/papers/*.pdf
+
+# Out-of-band confirmation files (runtime, project-specific)
+/confirmations/
+
+# Generated PoC test files (Phase 6 output, not source)
+tests/poc/
+
+# Linter / type checker caches
+.mypy_cache/
+.ruff_cache/
+
+# Foundry build artifacts
+forge-cache/
+out/
+cache/
 
 # macOS
 .DS_Store

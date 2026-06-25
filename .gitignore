@@ -2,7 +2,8 @@
 .specify/
 
 # Runtime agent memory (project-specific, never commit)
-memory/
+# /memory/ = top-level only; sr_agent/memory/ is source code and IS tracked
+/memory/
 
 # Fine-tuning artifacts (large files, dataset-specific)
 data/finetune/

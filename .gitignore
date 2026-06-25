@@ -31,5 +31,8 @@ langfuse_clickhouse/
 htmlcov/
 .coverage
 
+# Research paper PDFs — tracked locally, not committed (large binaries)
+research/papers/*.pdf
+
 # macOS
 .DS_Store

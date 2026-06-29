@@ -19,6 +19,7 @@ from sr_agent.orchestrator.confirmation import (
     ConfirmationStatus, check_confirmation, request_confirmation,
 )
 from sr_agent.orchestrator.context import build_messages, wrap_data
+from sr_agent.tools.readonly import ReadOnlyToolError, read_file, search_code
 from sr_agent.tools.registry import verify_all_hashes
 
 logger = logging.getLogger(__name__)
@@ -221,9 +222,32 @@ class OrchestratorLoop:
         return finding
 
     def _dispatch(self, action: Action) -> str:
-        """Execute a validated action. Tools are stubs until Phase 8."""
+        """Execute a validated action. Read-only tools are live; others are stubs.
+
+        Tool output is always wrapped in [DATA START]..[DATA END] — it is
+        external data that informs the LLM but is never executed as commands.
+        """
+        at = action.action_type
+        params = action.params
+
+        try:
+            if at == ActionType.read_file:
+                content = read_file(params["path"], self._audit_root)
+                return wrap_data(content, tool="read_file", path=str(params.get("path", "")))
+
+            if at == ActionType.search_code:
+                root = params.get("root", str(self._audit_root))
+                hits = search_code(params["pattern"], root)
+                body = "\n".join(f"{h.file}:{h.line}: {h.text}" for h in hits) or "(no matches)"
+                return wrap_data(body, tool="search_code", path=str(root))
+        except ReadOnlyToolError as e:
+            return wrap_data(f"TOOL ERROR: {e}", tool=at.value, path="")
+        except KeyError as e:
+            return wrap_data(f"TOOL ERROR: missing required param {e}", tool=at.value, path="")
+
+        # Slither/Mythril, on-chain, and write/execute dispatch land in later blocks.
         return wrap_data(
-            f"[STUB] Tool {action.action_type.value!r} not yet implemented.",
-            tool=action.action_type.value,
-            path=str(action.params.get("path", "")),
+            f"[STUB] Tool {at.value!r} not yet implemented.",
+            tool=at.value,
+            path=str(params.get("path", "")),
         )

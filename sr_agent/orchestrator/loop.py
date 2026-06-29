@@ -186,7 +186,7 @@ class OrchestratorLoop:
             session_id=self._session.session_id,
             finding=finding.model_dump(),
         )
-        self._memory.write(record)
+        self._memory.write(record, principal=self._session.principal)
         self._session.finding_ids.append(payload.finding_id)
         return finding
 

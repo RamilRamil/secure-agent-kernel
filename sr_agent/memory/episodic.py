@@ -3,14 +3,27 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from sr_agent.memory import hmac as hmac_module
 from sr_agent.models.memory import MemoryRecord, REQUIRES_HUMAN_CONFIRMATION, SourceType
+
+if TYPE_CHECKING:
+    from sr_agent.models.audit import Principal
 
 logger = logging.getLogger(__name__)
 
 
 class MemoryWriteError(Exception):
+    pass
+
+
+class PrincipalMismatch(Exception):
+    """Raised when a record's project_id does not match the active principal.
+
+    This is a hard isolation boundary — a write or load that crosses principals
+    is a security violation, not a recoverable condition.
+    """
     pass
 
 
@@ -26,11 +39,20 @@ class EpisodicMemory:
     def write(
         self,
         record: MemoryRecord,
+        principal: "Principal | None" = None,
     ) -> MemoryRecord:
         """Validate, sign, and append a record to the episodic store.
 
         Policy checks happen here — the model layer does not enforce policy.
+        If ``principal`` is given, the record's project_id must match it —
+        a mismatch raises PrincipalMismatch (cross-principal write attempt).
         """
+        if principal is not None and record.project_id != principal.project_id:
+            raise PrincipalMismatch(
+                f"Write rejected: record project_id={record.project_id!r} "
+                f"!= principal project_id={principal.project_id!r}"
+            )
+
         self._enforce_status_rules(record)
 
         # Orchestrator computes the HMAC — LLM never touches this field
@@ -45,13 +67,46 @@ class EpisodicMemory:
 
         return record
 
-    def load(self, project_id: str, target: str) -> list[MemoryRecord]:
+    def load(
+        self,
+        project_id: str,
+        target: str,
+        principal: "Principal | None" = None,
+    ) -> list[MemoryRecord]:
         """Load records, verify each HMAC, apply supersedes chain.
 
         Records with invalid HMAC are silently dropped — no exception, no log
         at WARNING+ level. This avoids giving an attacker a tamper oracle.
+
+        If ``principal`` is given, ``project_id`` must match it — a mismatch
+        raises PrincipalMismatch (cross-principal read attempt).
         """
-        path = self._path(project_id, target)
+        if principal is not None and project_id != principal.project_id:
+            raise PrincipalMismatch(
+                f"Load rejected: requested project_id={project_id!r} "
+                f"!= principal project_id={principal.project_id!r}"
+            )
+
+        return self._load_file(self._path(project_id, target))
+
+    def load_for_principal(self, principal: "Principal") -> list[MemoryRecord]:
+        """Load all records across all targets for a principal's project.
+
+        Scoping is enforced at the directory level: only files under
+        memory/<principal.project_id>/ are ever opened, so records belonging
+        to another principal are never read — not even to verify their HMAC.
+        """
+        project_dir = self._root / principal.project_id
+        if not project_dir.exists():
+            return []
+
+        records: list[MemoryRecord] = []
+        for path in sorted(project_dir.glob("*.jsonl")):
+            records.extend(self._load_file(path))
+        return records
+
+    def _load_file(self, path: Path) -> list[MemoryRecord]:
+        """Read one JSONL file, verify each HMAC, apply supersedes chain."""
         if not path.exists():
             return []
 

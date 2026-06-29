@@ -37,7 +37,7 @@ def save_checkpoint(
         checkpoint=checkpoint.model_dump(),
     )
 
-    saved = memory.write(record)
+    saved = memory.write(record, principal=session.principal)
     logger.info("Checkpoint saved for stage %d, session %s", stage, session.session_id)
     return saved
 

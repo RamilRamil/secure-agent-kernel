@@ -16,6 +16,7 @@ class Config:
     # Storage
     memory_root: Path
     knowledge_root: Path
+    confirmations_root: Path
 
     # Model routing
     stage1_model: str
@@ -48,6 +49,7 @@ def load_config() -> Config:
         secret_key=bytes.fromhex(_require("SR_SECRET_KEY")),
         memory_root=Path(os.environ.get("SR_MEMORY_ROOT", "./memory")),
         knowledge_root=Path(os.environ.get("SR_KNOWLEDGE_ROOT", "./knowledge")),
+        confirmations_root=Path(os.environ.get("SR_CONFIRMATIONS_ROOT", "./confirmations")),
         stage1_model=os.environ.get("SR_STAGE1_MODEL", "claude-opus-4-8"),
         stage2_model=os.environ.get("SR_STAGE2_MODEL", "sr-stage2"),
         stage3_model=os.environ.get("SR_STAGE3_MODEL", "claude-opus-4-8"),

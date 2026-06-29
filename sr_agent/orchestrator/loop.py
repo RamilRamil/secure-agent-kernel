@@ -15,6 +15,9 @@ from sr_agent.models.finding import Finding, Severity
 from sr_agent.models.memory import MemoryRecord, SourceType
 from sr_agent.orchestrator.action import validate_action
 from sr_agent.orchestrator.checkpoint import save_checkpoint
+from sr_agent.orchestrator.confirmation import (
+    ConfirmationStatus, check_confirmation, request_confirmation,
+)
 from sr_agent.orchestrator.context import build_messages, wrap_data
 from sr_agent.tools.registry import verify_all_hashes
 
@@ -48,10 +51,14 @@ class OrchestratorLoop:
         session: AuditSession,
         memory: EpisodicMemory,
         audit_root: Path,
+        confirmations_dir: Path | None = None,
+        confirmation_timeout_s: float = 300.0,
     ) -> None:
         self._session = session
         self._memory = memory
         self._audit_root = audit_root
+        self._confirmations_dir = confirmations_dir or config.confirmations_root
+        self._confirmation_timeout_s = confirmation_timeout_s
         self._llm = ClaudeClient()
         self._findings: list[Finding] = []
 
@@ -134,14 +141,37 @@ class OrchestratorLoop:
                 continue
 
             # ── Out-of-band confirmation gate ────────────────────────────
+            # Irreversible WRITE_EXECUTE actions pause here. The agent writes a
+            # pending request and blocks; only a separate `sr-agent confirm`
+            # process may approve it. Rejection or timeout (fail-safe) cancels
+            # the action and feeds the outcome back as an observation.
             if action.human_confirmation is False:
-                last_tool_output = wrap_data(
-                    f"Action {action.action_type.value!r} requires human confirmation. "
-                    "Use `sr-agent confirm` to approve or reject.",
-                    tool="orchestrator",
-                    path="",
+                req = request_confirmation(action, self._confirmations_dir)
+                logger.info(
+                    "Pausing for out-of-band confirmation %s (action %s)",
+                    req.confirmation_id, action.action_type.value,
                 )
-                continue
+                status = check_confirmation(
+                    req.confirmation_id,
+                    self._confirmations_dir,
+                    timeout_s=self._confirmation_timeout_s,
+                )
+                if status is not ConfirmationStatus.approved:
+                    logger.warning(
+                        "blocked_attempt: action %s confirmation %s was %s",
+                        action.action_type.value, req.confirmation_id, status.value,
+                    )
+                    last_tool_output = wrap_data(
+                        f"Action {action.action_type.value!r} was {status.value} "
+                        "via out-of-band confirmation — not executed.",
+                        tool="orchestrator",
+                        path="",
+                    )
+                    continue
+                action.human_confirmation = True  # approved out-of-band
+                logger.info(
+                    "Action %s approved out-of-band, proceeding", action.action_type.value
+                )
 
             # ── Execute (stub — tools implemented in later phases) ───────
             last_tool_output = self._dispatch(action)

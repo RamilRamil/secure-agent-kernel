@@ -67,8 +67,12 @@ class MemoryRecord(BaseModel):
     # Append-only correction chain
     supersedes: str | None = None        # record_id of the record this overrides
 
-    # Integrity — excluded from LLM-facing schema (orchestrator fills this)
-    hmac: str | None = Field(default=None, exclude=True)
+    # Integrity — orchestrator signs at write time, verifies at load time.
+    # Must be persisted to disk, so NO exclude=True here (that would strip the
+    # signature from model_dump_json() and every record would load as unsigned).
+    # When a record is surfaced to the LLM, strip hmac explicitly via
+    # for_llm_context() — never let the signature into model context.
+    hmac: str | None = Field(default=None)
 
     @model_validator(mode="after")
     def _content_present(self) -> MemoryRecord:
@@ -78,4 +82,12 @@ class MemoryRecord(BaseModel):
 
     def fields_for_hmac(self) -> dict:
         """Return the fields that are signed — everything except hmac itself."""
+        return self.model_dump(exclude={"hmac"})
+
+    def for_llm_context(self) -> dict:
+        """Serialize for inclusion in LLM context — hmac stripped.
+
+        The signature is an orchestrator-only integrity artifact; the model
+        must never see it (avoids both leakage and any tamper-oracle signal).
+        """
         return self.model_dump(exclude={"hmac"})

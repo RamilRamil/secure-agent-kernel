@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -16,6 +17,21 @@ logger = logging.getLogger(__name__)
 
 class MemoryWriteError(Exception):
     pass
+
+
+@dataclass
+class IntegrityReport:
+    """Result of an out-of-band integrity scan (`sr-agent memory verify`)."""
+    project_id: str
+    total: int = 0
+    valid: int = 0
+    invalid: int = 0
+    # target stem -> (total, valid, invalid)
+    per_target: dict[str, tuple[int, int, int]] = field(default_factory=dict)
+
+    @property
+    def has_invalid(self) -> bool:
+        return self.invalid > 0
 
 
 class PrincipalMismatch(Exception):
@@ -137,6 +153,48 @@ class EpisodicMemory:
                 valid[record.record_id] = record
 
         return self._apply_supersedes(valid)
+
+    def verify_integrity(self, project_id: str) -> IntegrityReport:
+        """Scan all records for a project and count valid vs tampered.
+
+        Unlike load(), this REPORTS invalid records. It is a human-run audit
+        tool (`sr-agent memory verify`), not the agent's context-loading path,
+        so there is no tamper-oracle concern — the operator needs the count for
+        incident response.
+        """
+        report = IntegrityReport(project_id=project_id)
+        project_dir = self._root / project_id
+        if not project_dir.exists():
+            return report
+
+        for path in sorted(project_dir.glob("*.jsonl")):
+            t_total = t_valid = t_invalid = 0
+            with path.open(encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    t_total += 1
+                    if self._line_is_valid(line):
+                        t_valid += 1
+                    else:
+                        t_invalid += 1
+            report.per_target[path.stem] = (t_total, t_valid, t_invalid)
+            report.total += t_total
+            report.valid += t_valid
+            report.invalid += t_invalid
+
+        return report
+
+    def _line_is_valid(self, line: str) -> bool:
+        """True if a raw JSONL line is a well-formed, correctly-signed record."""
+        try:
+            record = MemoryRecord.model_validate(json.loads(line))
+        except Exception:
+            return False
+        if record.hmac is None:
+            return False
+        return hmac_module.verify(record.fields_for_hmac(), record.hmac, self._secret_key)
 
     @staticmethod
     def _apply_supersedes(records: dict[str, MemoryRecord]) -> list[MemoryRecord]:

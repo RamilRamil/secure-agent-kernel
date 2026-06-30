@@ -27,7 +27,7 @@ class _FakeClient:
         self._response = response
         self._raises = raises
 
-    def generate(self, prompt: str) -> str:
+    def generate(self, prompt: str, fmt: str | None = None) -> str:
         if self._raises:
             raise ModelUnavailableError("down")
         return self._response

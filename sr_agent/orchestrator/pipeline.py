@@ -138,8 +138,14 @@ def start_audit(
     output: str = "audit-report.md",
     progress: ProgressStream | None = None,
     run_static: bool = True,
+    stage2_provider: str = "relay",
+    local_client=None,
 ) -> PipelineResult:
-    """Run Stage 1, emit Stage 2 relay requests, and persist run state."""
+    """Run Stage 1, then Stage 2 (local model or relay), and persist run state.
+
+    stage2_provider: "relay" (manual Claude, pause/resume), "local" (Ollama,
+    synchronous), or "auto" (local if reachable, else relay).
+    """
     progress = progress or silent()
     session = AuditSession(principal=audit_input.principal, audit_input=audit_input)
 
@@ -174,6 +180,20 @@ def start_audit(
         stage1_notes=stage1.notes,
     )
     save_state(state, runs_dir)
+
+    # Stage 2 provider: a local Ollama model runs synchronously (no pause);
+    # relay falls back to the manual Claude channel (pause/resume).
+    if stage2_provider in ("local", "auto"):
+        from sr_agent.llm_core.local_client import LocalClient
+        from sr_agent.planner.stage2 import run_stage2_local
+
+        client = local_client or LocalClient()
+        if client.available():
+            progress.emit(ProgressEvent.stage2_emit, f"local model {client.model}")
+            run_stage2_local(session, state.targets, memory, client, _context_provider(audit_root))
+            progress.emit(ProgressEvent.stage2_ingest, "local analysis complete")
+            return _finish(state, memory, progress)
+        progress.emit(ProgressEvent.paused, "local model unavailable — falling back to relay")
 
     return _run_stage2_step(state, session, memory, relay_dir, runs_dir, progress)
 

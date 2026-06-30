@@ -3,12 +3,26 @@ import json
 import pytest
 from pathlib import Path
 
+from sr_agent.models.finding import BastetTag, Severity
 from sr_agent.tools.sandbox import SandboxResult
 from sr_agent.tools.static_analysis import (
     SlitherError,
     parse_slither_json,
     run_slither,
+    slither_to_findings,
 )
+
+SAMPLE_WITH_ELEMENTS = json.dumps({
+    "results": {"detectors": [
+        {"check": "reentrancy-eth", "impact": "High", "confidence": "Medium",
+         "description": "Reentrancy in withdraw",
+         "elements": [
+             {"type": "function", "name": "withdraw",
+              "source_mapping": {"lines": [16, 17, 18]}},
+             {"type": "node", "name": "x", "source_mapping": {"lines": [19]}},
+         ]},
+    ]},
+})
 
 SAMPLE = json.dumps({
     "success": True,
@@ -59,6 +73,21 @@ def test_parse_missing_results():
 def test_parse_invalid_json_raises():
     with pytest.raises(SlitherError):
         parse_slither_json("not json")
+
+
+def test_parse_extracts_function_and_line():
+    f = parse_slither_json(SAMPLE_WITH_ELEMENTS)[0]
+    assert f.function == "withdraw"
+    assert f.line == 16
+
+
+def test_slither_to_findings_maps_fields():
+    findings = slither_to_findings(parse_slither_json(SAMPLE_WITH_ELEMENTS), "Vault.sol")
+    assert len(findings) == 1
+    assert findings[0].location == "Vault.sol:16"
+    assert findings[0].function_name == "withdraw"
+    assert findings[0].severity is Severity.high
+    assert findings[0].bastet_tag is BastetTag.reentrancy
 
 
 # ── run_slither wiring ───────────────────────────────────────────────────────

@@ -21,6 +21,7 @@ from sr_agent.io.report import generate_report
 from sr_agent.memory.episodic import EpisodicMemory
 from sr_agent.models.audit import AuditInput, AuditSession, Principal, Stage1Report
 from sr_agent.models.finding import Finding
+from sr_agent.models.memory import MemoryRecord, SourceType
 from sr_agent.planner.sig import build_sig
 from sr_agent.planner.stage1 import run_stage1
 from sr_agent.planner.stage2 import run_stage2
@@ -70,6 +71,48 @@ def load_state(session_id: str, runs_dir: Path) -> PipelineState:
     return PipelineState(**json.loads(path.read_text(encoding="utf-8")))
 
 
+def _run_static_analysis(
+    audit_root: Path,
+    files: list[str],
+    session: AuditSession,
+    memory: EpisodicMemory,
+    progress: ProgressStream,
+) -> int:
+    """Run Slither on each file and store findings as tool_output (best effort).
+
+    Deterministic findings from a static analyser are more trusted than relayed
+    ones (tool_output > external_llm_output). If Docker/Slither is unavailable
+    this is skipped silently — it enriches the audit, it does not gate it.
+    """
+    from sr_agent.tools.sandbox import DockerSandbox
+    from sr_agent.tools.static_analysis import run_slither, slither_to_findings
+
+    sandbox = DockerSandbox()
+    written = 0
+    for file_rel in files:
+        try:
+            slither_findings = run_slither(audit_root / file_rel, audit_root, sandbox)
+        except Exception as e:  # SandboxUnavailable / SlitherError / daemon down
+            progress.emit(ProgressEvent.stage1_done, f"static analysis skipped ({type(e).__name__})")
+            return written
+        for sf, finding in zip(slither_findings, slither_to_findings(slither_findings, file_rel)):
+            payload = finding.model_dump()
+            payload["notes"] = sf.description
+            memory.write(
+                MemoryRecord(
+                    project_id=session.principal.project_id,
+                    target=file_rel,
+                    source_type=SourceType.tool_output,
+                    tool="run_slither",
+                    session_id=session.session_id,
+                    finding=payload,
+                ),
+                principal=session.principal,
+            )
+            written += 1
+    return written
+
+
 def _context_provider(audit_root: Path):
     def provider(target: str) -> str:
         filename = target.split(":")[0]
@@ -94,6 +137,7 @@ def start_audit(
     runs_dir: Path,
     output: str = "audit-report.md",
     progress: ProgressStream | None = None,
+    run_static: bool = True,
 ) -> PipelineResult:
     """Run Stage 1, emit Stage 2 relay requests, and persist run state."""
     progress = progress or silent()
@@ -106,6 +150,17 @@ def start_audit(
         focus=audit_input.focus_files or None,
     )
     progress.emit(ProgressEvent.stage1_done, f"{len(stage1.priority_targets)} priority targets")
+
+    # Static-analysis pass: deterministic findings from Slither (tool_output).
+    if run_static:
+        unique_files: list[str] = []
+        for target in stage1.priority_targets:
+            f = target.split(":")[0]
+            if f not in unique_files:
+                unique_files.append(f)
+        static_count = _run_static_analysis(audit_root, unique_files, session, memory, progress)
+        if static_count:
+            progress.emit(ProgressEvent.stage1_done, f"{static_count} static-analysis finding(s)")
 
     state = PipelineState(
         session_id=session.session_id,

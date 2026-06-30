@@ -17,6 +17,7 @@ class Config:
     memory_root: Path
     knowledge_root: Path
     confirmations_root: Path
+    relay_root: Path
 
     # Model routing
     stage1_model: str
@@ -50,6 +51,7 @@ def load_config() -> Config:
         memory_root=Path(os.environ.get("SR_MEMORY_ROOT", "./memory")),
         knowledge_root=Path(os.environ.get("SR_KNOWLEDGE_ROOT", "./knowledge")),
         confirmations_root=Path(os.environ.get("SR_CONFIRMATIONS_ROOT", "./confirmations")),
+        relay_root=Path(os.environ.get("SR_RELAY_ROOT", "./relay")),
         stage1_model=os.environ.get("SR_STAGE1_MODEL", "claude-opus-4-8"),
         stage2_model=os.environ.get("SR_STAGE2_MODEL", "sr-stage2"),
         stage3_model=os.environ.get("SR_STAGE3_MODEL", "claude-opus-4-8"),

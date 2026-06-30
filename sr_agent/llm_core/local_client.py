@@ -44,11 +44,17 @@ class LocalClient:
         base = self.model.split(":")[0]
         return any(self.model == n or n.startswith(base + ":") for n in names)
 
-    def generate(self, prompt: str) -> str:
-        """Single-turn generation. Raises ModelUnavailableError if unreachable."""
-        payload = json.dumps(
-            {"model": self.model, "prompt": prompt, "stream": False}
-        ).encode("utf-8")
+    def generate(self, prompt: str, fmt: str | None = None) -> str:
+        """Single-turn generation. Raises ModelUnavailableError if unreachable.
+
+        fmt="json" enables Ollama's grammar-constrained JSON decoding, which
+        guarantees syntactically valid JSON (small models otherwise leave inner
+        quotes unescaped and break the parser).
+        """
+        body: dict = {"model": self.model, "prompt": prompt, "stream": False}
+        if fmt:
+            body["format"] = fmt
+        payload = json.dumps(body).encode("utf-8")
         req = urllib.request.Request(
             f"{self.host}/api/generate",
             data=payload,
@@ -84,7 +90,7 @@ def build_analysis_prompt(target: str, context: str) -> str:
 
 def analyze_target(client: LocalClient, target: str, context: str) -> RelayIngestResult:
     """Analyze one target with the local model; parse via the shared adapter."""
-    text = client.generate(build_analysis_prompt(target, context))
+    text = client.generate(build_analysis_prompt(target, context), fmt="json")
     result = adapt_findings(text, request_id=target)
     logger.info(
         "Local analysis %s: %d findings, %d errors", target,

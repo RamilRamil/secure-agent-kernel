@@ -283,7 +283,7 @@ def _finish(
     # Back to dicts for the report, re-attaching the sanitized notes.
     finding_dicts: list[dict] = []
     for finding in stage3.findings:
-        d = finding.model_dump()
+        d = finding.model_dump(mode="json")  # enums -> their string values for the report
         notes, flags = notes_map.get(finding.finding_id, ("", []))
         d["notes"] = notes
         d["notes_flags"] = flags

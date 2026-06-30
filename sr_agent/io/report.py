@@ -40,6 +40,9 @@ def _render_finding(f: dict) -> list[str]:
     mitig = f.get("mitigations_present") or []
     if mitig:
         lines.append(f"- **Mitigations present**: {', '.join(mitig)}")
+    combined = f.get("combined_with") or []
+    if combined:
+        lines.append(f"- **Combined with**: {', '.join(combined)}")
     if flags:
         lines.append(f"- **Sanitizer flags**: {', '.join(flags)}")
     if notes:
@@ -53,6 +56,7 @@ def generate_report(
     findings: list[dict],
     stage1: Stage1Report | None = None,
     generated_at: datetime | None = None,
+    combinations: list[str] | None = None,
 ) -> str:
     generated_at = generated_at or datetime.utcnow()
     visible = [f for f in findings if f.get("status", "open") not in _HIDDEN_STATUSES]
@@ -94,6 +98,12 @@ def generate_report(
                   "_Reported by analysis but not yet verified; treat as leads._", ""]
         for f in unverified:
             lines += _render_finding(f)
+
+    if combinations:
+        lines += ["## Combination Chains", ""]
+        for chain in combinations:
+            lines.append(f"- {chain}")
+        lines.append("")
 
     lines += ["## Coverage", ""]
     if stage1 is not None:

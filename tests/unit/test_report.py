@@ -66,3 +66,16 @@ def test_empty_findings():
 def test_sanitizer_flags_surfaced():
     md = generate_report("demo", [_f("H-1", "high", notes="x", notes_flags=["zero_width_chars"])])
     assert "zero_width_chars" in md
+
+
+def test_combined_with_rendered():
+    md = generate_report("demo", [_f("H-1", "high", combined_with=["H-2"])])
+    assert "Combined with" in md
+    assert "H-2" in md
+
+
+def test_combinations_section():
+    md = generate_report("demo", [_f("H-1", "critical")],
+                         combinations=["Vault.sol: 2 interacting high+ findings → critical chain"])
+    assert "## Combination Chains" in md
+    assert "critical chain" in md

@@ -19,8 +19,10 @@ from pathlib import Path
 from sr_agent.io.report import generate_report
 from sr_agent.memory.episodic import EpisodicMemory
 from sr_agent.models.audit import AuditInput, AuditSession, Principal, Stage1Report
+from sr_agent.models.finding import Finding
 from sr_agent.planner.stage1 import run_stage1
 from sr_agent.planner.stage2 import run_stage2
+from sr_agent.planner.stage3 import run_stage3
 from sr_agent.tools.readonly import read_file
 
 logger = logging.getLogger(__name__)
@@ -149,16 +151,48 @@ def _run_stage2_step(
 
 def _finish(state: PipelineState, memory: EpisodicMemory) -> PipelineResult:
     principal = Principal(user_id=state.user_id, platform=state.platform, project_id=state.project_id)
-    findings = [r.finding for r in memory.load_for_principal(principal) if r.finding]
+
+    # Reconstruct Finding objects from stored payloads, keeping notes aside
+    # (notes is not a Finding field). Stage 3 transforms the Finding objects.
+    notes_map: dict[str, tuple[str, list]] = {}
+    finding_objs: list[Finding] = []
+    for record in memory.load_for_principal(principal):
+        if not record.finding:
+            continue
+        payload = dict(record.finding)
+        notes = payload.pop("notes", "")
+        notes_flags = payload.pop("notes_flags", [])
+        try:
+            finding = Finding(**payload)
+        except Exception:
+            continue
+        notes_map[finding.finding_id] = (notes, notes_flags)
+        finding_objs.append(finding)
+
+    stage3 = run_stage3(finding_objs)
+
+    # Back to dicts for the report, re-attaching the sanitized notes.
+    finding_dicts: list[dict] = []
+    for finding in stage3.findings:
+        d = finding.model_dump()
+        notes, flags = notes_map.get(finding.finding_id, ("", []))
+        d["notes"] = notes
+        d["notes_flags"] = flags
+        finding_dicts.append(d)
 
     stage1 = Stage1Report(
         priority_targets=state.targets, skipped_targets=state.skipped, notes=state.stage1_notes
     )
-    report_md = generate_report(state.project_id, findings, stage1=stage1)
+    report_md = generate_report(
+        state.project_id, finding_dicts, stage1=stage1, combinations=stage3.combinations
+    )
     Path(state.output).write_text(report_md, encoding="utf-8")
 
-    logger.info("Audit %s complete: %d findings -> %s", state.session_id, len(findings), state.output)
+    logger.info(
+        "Audit %s complete: %d findings, %d chains -> %s",
+        state.session_id, len(finding_dicts), len(stage3.combinations), state.output,
+    )
     return PipelineResult(
         status="done", session_id=state.session_id,
-        report_path=state.output, findings_count=len(findings),
+        report_path=state.output, findings_count=len(finding_dicts),
     )

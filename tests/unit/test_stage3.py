@@ -2,6 +2,7 @@
 import pytest
 
 from sr_agent.models.finding import Finding, Severity
+from sr_agent.planner.sig import build_sig
 from sr_agent.planner.stage3 import run_stage3
 
 
@@ -59,6 +60,32 @@ def test_chain_requires_two_severe():
     result = run_stage3([a, b])
     assert a.severity is Severity.high  # not elevated — only one severe
     assert result.combinations == []
+
+
+def test_sig_prevents_unrelated_combination():
+    src = ("contract C { uint a; uint b;"
+           " function f() public { a = 1; msg.sender.call(\"\"); }"
+           " function g() public { b = 2; msg.sender.call(\"\"); } }")
+    sig = build_sig(src)
+    a = _f("F-1", Severity.high, location="C.sol:f")
+    b = _f("G-1", Severity.high, location="C.sol:g")
+    result = run_stage3([a, b], sigs={"C.sol": sig})
+    assert a.combined_with == []          # f writes a, g writes b — no shared state
+    assert a.severity is Severity.high    # not elevated
+    assert result.combinations == []
+
+
+def test_sig_allows_shared_state_combination():
+    src = ("contract C { uint a;"
+           " function f() public { a = 1; msg.sender.call(\"\"); }"
+           " function g() public { a = 2; } }")
+    sig = build_sig(src)
+    a = _f("F-1", Severity.high, location="C.sol:f")
+    b = _f("G-1", Severity.high, location="C.sol:g")
+    result = run_stage3([a, b], sigs={"C.sol": sig})
+    assert "G-1" in a.combined_with
+    assert a.severity is Severity.critical
+    assert result.combinations
 
 
 def test_mitigated_finding_excluded_from_chain():

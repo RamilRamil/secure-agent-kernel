@@ -20,6 +20,7 @@ from sr_agent.io.report import generate_report
 from sr_agent.memory.episodic import EpisodicMemory
 from sr_agent.models.audit import AuditInput, AuditSession, Principal, Stage1Report
 from sr_agent.models.finding import Finding
+from sr_agent.planner.sig import build_sig
 from sr_agent.planner.stage1 import run_stage1
 from sr_agent.planner.stage2 import run_stage2
 from sr_agent.planner.stage3 import run_stage3
@@ -169,7 +170,22 @@ def _finish(state: PipelineState, memory: EpisodicMemory) -> PipelineResult:
         notes_map[finding.finding_id] = (notes, notes_flags)
         finding_objs.append(finding)
 
-    stage3 = run_stage3(finding_objs)
+    # Build a per-file State Interference Graph so Stage 3 combines findings
+    # that actually share state, not merely findings in the same file.
+    audit_root = Path(state.audit_root)
+    sigs: dict = {}
+    for finding in finding_objs:
+        src_file = finding.location.split(":")[0]
+        if src_file in sigs:
+            continue
+        src_path = audit_root / src_file
+        if src_path.exists():
+            try:
+                sigs[src_file] = build_sig(src_path.read_text(encoding="utf-8", errors="replace"))
+            except Exception:
+                pass
+
+    stage3 = run_stage3(finding_objs, sigs=sigs)
 
     # Back to dicts for the report, re-attaching the sanitized notes.
     finding_dicts: list[dict] = []

@@ -16,6 +16,7 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from sr_agent.io.progress import ProgressEvent, ProgressStream, silent
 from sr_agent.io.report import generate_report
 from sr_agent.memory.episodic import EpisodicMemory
 from sr_agent.models.audit import AuditInput, AuditSession, Principal, Stage1Report
@@ -92,15 +93,19 @@ def start_audit(
     relay_dir: Path,
     runs_dir: Path,
     output: str = "audit-report.md",
+    progress: ProgressStream | None = None,
 ) -> PipelineResult:
     """Run Stage 1, emit Stage 2 relay requests, and persist run state."""
+    progress = progress or silent()
     session = AuditSession(principal=audit_input.principal, audit_input=audit_input)
 
+    progress.emit(ProgressEvent.stage1_start)
     stage1 = run_stage1(
         audit_root,
         exclude=audit_input.exclude_paths or None,
         focus=audit_input.focus_files or None,
     )
+    progress.emit(ProgressEvent.stage1_done, f"{len(stage1.priority_targets)} priority targets")
 
     state = PipelineState(
         session_id=session.session_id,
@@ -115,7 +120,7 @@ def start_audit(
     )
     save_state(state, runs_dir)
 
-    return _run_stage2_step(state, session, memory, relay_dir, runs_dir)
+    return _run_stage2_step(state, session, memory, relay_dir, runs_dir, progress)
 
 
 def resume_audit(
@@ -123,11 +128,13 @@ def resume_audit(
     memory: EpisodicMemory,
     relay_dir: Path,
     runs_dir: Path,
+    progress: ProgressStream | None = None,
 ) -> PipelineResult:
     """Ingest available relay responses; finish with a report when complete."""
+    progress = progress or silent()
     state = load_state(session_id, runs_dir)
     session = _session_from_state(state)
-    return _run_stage2_step(state, session, memory, relay_dir, runs_dir)
+    return _run_stage2_step(state, session, memory, relay_dir, runs_dir, progress)
 
 
 def _run_stage2_step(
@@ -136,6 +143,7 @@ def _run_stage2_step(
     memory: EpisodicMemory,
     relay_dir: Path,
     runs_dir: Path,
+    progress: ProgressStream,
 ) -> PipelineResult:
     result = run_stage2(
         session,
@@ -144,13 +152,22 @@ def _run_stage2_step(
         relay_dir,
         _context_provider(Path(state.audit_root)),
     )
+    if result.requested:
+        progress.emit(ProgressEvent.stage2_emit, f"{result.requested} request(s)")
+    if result.ingested:
+        progress.emit(ProgressEvent.stage2_ingest, f"{result.ingested} response(s)")
+
     if result.status == "paused":
-        return PipelineResult(status="paused", session_id=state.session_id, pending=len(result.pending) or len(state.targets))
+        pending = len(result.pending) or len(state.targets)
+        progress.emit(ProgressEvent.paused, f"{pending} target(s)")
+        return PipelineResult(status="paused", session_id=state.session_id, pending=pending)
 
-    return _finish(state, memory)
+    return _finish(state, memory, progress)
 
 
-def _finish(state: PipelineState, memory: EpisodicMemory) -> PipelineResult:
+def _finish(
+    state: PipelineState, memory: EpisodicMemory, progress: ProgressStream
+) -> PipelineResult:
     principal = Principal(user_id=state.user_id, platform=state.platform, project_id=state.project_id)
 
     # Reconstruct Finding objects from stored payloads, keeping notes aside
@@ -186,6 +203,7 @@ def _finish(state: PipelineState, memory: EpisodicMemory) -> PipelineResult:
                 pass
 
     stage3 = run_stage3(finding_objs, sigs=sigs)
+    progress.emit(ProgressEvent.stage3, f"{len(stage3.combinations)} combination chain(s)")
 
     # Back to dicts for the report, re-attaching the sanitized notes.
     finding_dicts: list[dict] = []
@@ -203,6 +221,7 @@ def _finish(state: PipelineState, memory: EpisodicMemory) -> PipelineResult:
         state.project_id, finding_dicts, stage1=stage1, combinations=stage3.combinations
     )
     Path(state.output).write_text(report_md, encoding="utf-8")
+    progress.emit(ProgressEvent.report, state.output)
 
     logger.info(
         "Audit %s complete: %d findings, %d chains -> %s",

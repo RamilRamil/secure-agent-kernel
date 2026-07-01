@@ -16,6 +16,7 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from sr_agent.eval.tracer import NOOP_TRACER, Tracer
 from sr_agent.io.progress import ProgressEvent, ProgressStream, silent
 from sr_agent.io.report import generate_report
 from sr_agent.memory.episodic import EpisodicMemory
@@ -196,6 +197,7 @@ def start_audit(
     stage2_provider: str = "relay",
     local_client=None,
     smartgraphical_root: str = "",
+    tracer: Tracer = NOOP_TRACER,
 ) -> PipelineResult:
     """Run Stage 1, then Stage 2 (local model or relay), and persist run state.
 
@@ -253,7 +255,10 @@ def start_audit(
         client = local_client or LocalClient()
         if client.available():
             progress.emit(ProgressEvent.stage2_emit, f"local model {client.model}")
-            run_stage2_local(session, state.targets, memory, client, _context_provider(audit_root))
+            run_stage2_local(
+                session, state.targets, memory, client, _context_provider(audit_root),
+                tracer=tracer,
+            )
             progress.emit(ProgressEvent.stage2_ingest, "local analysis complete")
             return _finish(state, memory, progress)
         progress.emit(ProgressEvent.paused, "local model unavailable — falling back to relay")

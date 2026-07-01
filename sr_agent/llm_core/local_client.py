@@ -11,10 +11,12 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
 
+from sr_agent.eval.tracer import NOOP_TRACER, Tracer
 from sr_agent.orchestrator.relay import RelayIngestResult, adapt_findings
 
 logger = logging.getLogger(__name__)
@@ -68,6 +70,9 @@ class LocalClient:
         return data.get("response", "")
 
 
+# Built-in fallback — used verbatim if Langfuse is disabled/unreachable, and
+# as the seed text pushed to Langfuse Prompt Management under the same name
+# (T079). This is the live Stage 2 prompt (relay/local model path).
 _PROMPT = """You are a smart contract security auditor. Analyze the target for
 exploitable vulnerabilities.
 
@@ -84,16 +89,38 @@ Reply with ONLY a JSON object of this exact shape:
 If there are no vulnerabilities, reply {{"findings": []}}. Return only the JSON."""
 
 
-def build_analysis_prompt(target: str, context: str) -> str:
-    return _PROMPT.format(target=target, context=context)
+def build_analysis_prompt(target: str, context: str, template: str = _PROMPT) -> str:
+    return template.format(target=target, context=context)
 
 
-def analyze_target(client: LocalClient, target: str, context: str) -> RelayIngestResult:
-    """Analyze one target with the local model; parse via the shared adapter."""
-    text = client.generate(build_analysis_prompt(target, context), fmt="json")
+def analyze_target(
+    client: LocalClient,
+    target: str,
+    context: str,
+    tracer: Tracer = NOOP_TRACER,
+    session_id: str = "",
+) -> RelayIngestResult:
+    """Analyze one target with the local model; parse via the shared adapter.
+
+    `tracer` logs the call as one Langfuse generation (model, prompt, raw
+    output, latency), and resolves the prompt template from Langfuse Prompt
+    Management (T079) if configured; a no-op tracer (default) does neither
+    and falls back to the built-in `_PROMPT`.
+    """
+    template = tracer.get_prompt("stage2-local-analysis", _PROMPT)
+    prompt = build_analysis_prompt(target, context, template)
+    start = time.monotonic()
+    text = client.generate(prompt, fmt="json")
+    latency_s = time.monotonic() - start
     result = adapt_findings(text, request_id=target)
     logger.info(
         "Local analysis %s: %d findings, %d errors", target,
         len(result.findings), len(result.errors),
     )
+    with tracer.trace("stage2-local", session_id) as trace:
+        tracer.generation(
+            trace, name="analyze_target", model=client.model,
+            input=prompt, output=text,
+            metadata={"latency_s": latency_s, "target": target},
+        )
     return result

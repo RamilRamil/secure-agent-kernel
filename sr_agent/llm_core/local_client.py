@@ -24,6 +24,11 @@ logger = logging.getLogger(__name__)
 DEFAULT_MODEL = "qwen2.5-coder:3b"
 DEFAULT_HOST = "http://localhost:11434"
 
+# Stage 2 model preference (T091): the fine-tuned MI-resistant model if it has
+# been built (`ollama create sr-stage2`), else a stock instruct model.
+STAGE2_MODEL = "sr-stage2"
+STAGE2_FALLBACK = "qwen3:4b"
+
 
 class ModelUnavailableError(Exception):
     pass
@@ -45,6 +50,25 @@ class LocalClient:
         names = {m.get("name", "") for m in tags.get("models", [])}
         base = self.model.split(":")[0]
         return any(self.model == n or n.startswith(base + ":") for n in names)
+
+    @classmethod
+    def for_stage2(
+        cls,
+        preferred: str = STAGE2_MODEL,
+        fallback: str = STAGE2_FALLBACK,
+        host: str = DEFAULT_HOST,
+    ) -> "LocalClient":
+        """Resolve the Stage 2 client (T091): prefer the fine-tuned `sr-stage2`
+        model, fall back to a stock model if it hasn't been built yet.
+
+        Falls back when the preferred model isn't pulled but the fallback is, or
+        when Ollama is unreachable entirely (so `.available()` still gates it).
+        """
+        primary = cls(model=preferred, host=host)
+        if primary.available():
+            return primary
+        alt = cls(model=fallback, host=host)
+        return alt if alt.available() else primary
 
     def generate(self, prompt: str, fmt: str | None = None) -> str:
         """Single-turn generation. Raises ModelUnavailableError if unreachable.

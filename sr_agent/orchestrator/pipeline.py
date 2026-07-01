@@ -252,7 +252,7 @@ def start_audit(
         from sr_agent.llm_core.local_client import LocalClient
         from sr_agent.planner.stage2 import run_stage2_local
 
-        client = local_client or LocalClient()
+        client = local_client or LocalClient.for_stage2()
         if client.available():
             progress.emit(ProgressEvent.stage2_emit, f"local model {client.model}")
             run_stage2_local(

@@ -33,8 +33,11 @@ def _render_finding(f: dict) -> list[str]:
     notes = (f.get("notes") or "").strip()
     flags = f.get("notes_flags") or []
 
+    engine = f.get("engine")
     lines = [f"### [{severity.upper()}] {fid} — `{func}`", ""]
     lines.append(f"- **Location**: {location}")
+    if engine:
+        lines.append(f"- **Engine**: {engine}")
     if tag:
         lines.append(f"- **Category**: {tag}")
     mitig = f.get("mitigations_present") or []

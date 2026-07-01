@@ -98,12 +98,62 @@ def _run_static_analysis(
         for sf, finding in zip(slither_findings, slither_to_findings(slither_findings, file_rel)):
             payload = finding.model_dump()
             payload["notes"] = sf.description
+            payload["engine"] = "slither"
             memory.write(
                 MemoryRecord(
                     project_id=session.principal.project_id,
                     target=file_rel,
                     source_type=SourceType.tool_output,
                     tool="run_slither",
+                    session_id=session.session_id,
+                    finding=payload,
+                ),
+                principal=session.principal,
+            )
+            written += 1
+    return written
+
+
+def _run_smartgraphical_analysis(
+    audit_root: Path,
+    files: list[str],
+    session: AuditSession,
+    memory: EpisodicMemory,
+    progress: ProgressStream,
+    sg_root: str,
+) -> int:
+    """Run SmartGraphical on each file and store logic findings as tool_output.
+
+    Best-effort: a missing SmartGraphical root, an unavailable interpreter, or
+    any error skips the pass silently — it enriches the audit, never gates it.
+    """
+    if not sg_root:
+        return 0
+    from sr_agent.guardrails.sanitize import sanitize as _sanitize
+    from sr_agent.tools.smartgraphical import run_smartgraphical, sg_to_findings
+
+    written = 0
+    for file_rel in files:
+        try:
+            sg_findings, _graph = run_smartgraphical(audit_root / file_rel, audit_root, sg_root)
+        except Exception as e:
+            progress.emit(ProgressEvent.stage1_done, f"SmartGraphical skipped ({type(e).__name__})")
+            return written
+        for sf, finding in zip(sg_findings, sg_to_findings(sg_findings, file_rel)):
+            payload = finding.model_dump()
+            clean = _sanitize(f"{sf.message} — {sf.remediation_hint}".strip(" —"))
+            payload["notes"] = clean.normalized
+            payload["notes_flags"] = clean.flags
+            payload["engine"] = "smartgraphical"
+            payload["rule_id"] = sf.rule_id
+            payload["category"] = sf.category
+            payload["confidence"] = sf.confidence
+            memory.write(
+                MemoryRecord(
+                    project_id=session.principal.project_id,
+                    target=file_rel,
+                    source_type=SourceType.tool_output,
+                    tool="run_smartgraphical",
                     session_id=session.session_id,
                     finding=payload,
                 ),
@@ -140,6 +190,7 @@ def start_audit(
     run_static: bool = True,
     stage2_provider: str = "relay",
     local_client=None,
+    smartgraphical_root: str = "",
 ) -> PipelineResult:
     """Run Stage 1, then Stage 2 (local model or relay), and persist run state.
 
@@ -167,6 +218,11 @@ def start_audit(
         static_count = _run_static_analysis(audit_root, unique_files, session, memory, progress)
         if static_count:
             progress.emit(ProgressEvent.stage1_done, f"{static_count} static-analysis finding(s)")
+        sg_count = _run_smartgraphical_analysis(
+            audit_root, unique_files, session, memory, progress, smartgraphical_root
+        )
+        if sg_count:
+            progress.emit(ProgressEvent.stage1_done, f"{sg_count} SmartGraphical finding(s)")
 
     state = PipelineState(
         session_id=session.session_id,
@@ -247,19 +303,28 @@ def _finish(
 
     # Reconstruct Finding objects from stored payloads, keeping notes aside
     # (notes is not a Finding field). Stage 3 transforms the Finding objects.
-    notes_map: dict[str, tuple[str, list]] = {}
+    # Display extras that are not Finding fields (engine attribution, rule id,
+    # category, confidence, notes) are carried aside and re-attached for the
+    # report after Stage 3 transforms the Finding objects.
+    extras_map: dict[str, dict] = {}
     finding_objs: list[Finding] = []
     for record in memory.load_for_principal(principal):
         if not record.finding:
             continue
         payload = dict(record.finding)
-        notes = payload.pop("notes", "")
-        notes_flags = payload.pop("notes_flags", [])
+        extras = {
+            "notes": payload.pop("notes", ""),
+            "notes_flags": payload.pop("notes_flags", []),
+            "engine": payload.get("engine"),
+            "rule_id": payload.get("rule_id"),
+            "category": payload.get("category"),
+            "confidence": payload.get("confidence"),
+        }
         try:
             finding = Finding(**payload)
         except Exception:
             continue
-        notes_map[finding.finding_id] = (notes, notes_flags)
+        extras_map[finding.finding_id] = extras
         finding_objs.append(finding)
 
     # Build a per-file State Interference Graph so Stage 3 combines findings
@@ -284,9 +349,9 @@ def _finish(
     finding_dicts: list[dict] = []
     for finding in stage3.findings:
         d = finding.model_dump(mode="json")  # enums -> their string values for the report
-        notes, flags = notes_map.get(finding.finding_id, ("", []))
-        d["notes"] = notes
-        d["notes_flags"] = flags
+        for key, value in extras_map.get(finding.finding_id, {}).items():
+            if value not in (None, ""):
+                d[key] = value
         finding_dicts.append(d)
 
     stage1 = Stage1Report(

@@ -19,6 +19,10 @@ class Config:
     confirmations_root: Path
     relay_root: Path
 
+    # SmartGraphical engine (feature 002) — external structural+logic analyzer.
+    # Empty string disables the engine; pipeline auto-skips if unset/unavailable.
+    smartgraphical_root: str
+
     # Model routing
     stage1_model: str
     stage2_model: str
@@ -52,6 +56,7 @@ def load_config() -> Config:
         knowledge_root=Path(os.environ.get("SR_KNOWLEDGE_ROOT", "./knowledge")),
         confirmations_root=Path(os.environ.get("SR_CONFIRMATIONS_ROOT", "./confirmations")),
         relay_root=Path(os.environ.get("SR_RELAY_ROOT", "./relay")),
+        smartgraphical_root=os.environ.get("SR_SMARTGRAPHICAL_ROOT", ""),
         stage1_model=os.environ.get("SR_STAGE1_MODEL", "claude-opus-4-8"),
         stage2_model=os.environ.get("SR_STAGE2_MODEL", "sr-stage2"),
         stage3_model=os.environ.get("SR_STAGE3_MODEL", "claude-opus-4-8"),

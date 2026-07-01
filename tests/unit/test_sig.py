@@ -69,3 +69,43 @@ def test_on_example_vault():
         ["Vault.sol:withdraw", "Vault.sol:deposit", "Vault.sol:totalBalance"], sig
     )
     assert ("Vault.sol:withdraw", "Vault.sol:deposit") in pairs
+
+
+# ── build_sig_from_smartgraphical (feature 002, US2) ─────────────────────────
+
+def _sg_graph():
+    import json
+    from pathlib import Path
+    fx = Path(__file__).resolve().parents[1] / "fixtures" / "smartgraphical" / "sample_graph.json"
+    return json.load(fx.open())
+
+
+def test_sg_sig_reads_state_write_edge():
+    from sr_agent.planner.sig import build_sig_from_smartgraphical
+    sig = build_sig_from_smartgraphical(_sg_graph())
+    assert "balances" in sig.functions["_credit"].writes
+
+
+def test_sg_sig_propagates_state_through_call():
+    from sr_agent.planner.sig import build_sig_from_smartgraphical
+    sig = build_sig_from_smartgraphical(_sg_graph())
+    # deposit calls _credit (cross_type_call) -> inherits its write to balances
+    assert "balances" in sig.functions["deposit"].writes
+
+
+def test_sg_sig_detects_cross_inheritance_interference():
+    from sr_agent.planner.sig import build_sig_from_smartgraphical
+    sig = build_sig_from_smartgraphical(_sg_graph())
+    # deposit (Vault) and _credit (Base) share balances via the inherited call
+    assert sig.interferes("deposit", "_credit")
+
+
+def test_regex_sig_misses_what_sg_catches():
+    """Contrast: the single-file regex SIG does NOT link deposit and _credit."""
+    from pathlib import Path
+    from sr_agent.planner.sig import build_sig
+    root = Path(__file__).resolve().parents[2] / "examples" / "inheritance-vault"
+    regex_sig = build_sig((root / "Vault.sol").read_text())
+    # deposit's body is just `_credit(...)` — no `balances` token, so regex sees
+    # no shared state with _credit.
+    assert not regex_sig.interferes("deposit", "_credit")

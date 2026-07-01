@@ -22,7 +22,7 @@ from sr_agent.memory.episodic import EpisodicMemory
 from sr_agent.models.audit import AuditInput, AuditSession, Principal, Stage1Report
 from sr_agent.models.finding import Finding
 from sr_agent.models.memory import MemoryRecord, SourceType
-from sr_agent.planner.sig import build_sig
+from sr_agent.planner.sig import build_sig, build_sig_from_smartgraphical
 from sr_agent.planner.stage1 import run_stage1
 from sr_agent.planner.stage2 import run_stage2
 from sr_agent.planner.stage3 import run_stage3
@@ -42,6 +42,7 @@ class PipelineState:
     targets: list[str] = field(default_factory=list)
     skipped: list[str] = field(default_factory=list)
     stage1_notes: str = ""
+    sg_graphs: dict = field(default_factory=dict)  # file_rel -> SmartGraphical graph
 
 
 @dataclass
@@ -121,24 +122,28 @@ def _run_smartgraphical_analysis(
     memory: EpisodicMemory,
     progress: ProgressStream,
     sg_root: str,
-) -> int:
-    """Run SmartGraphical on each file and store logic findings as tool_output.
+) -> tuple[int, dict]:
+    """Run SmartGraphical on each file, store findings, and collect graphs.
 
-    Best-effort: a missing SmartGraphical root, an unavailable interpreter, or
-    any error skips the pass silently — it enriches the audit, never gates it.
+    Returns (findings_written, {file_rel: graph}). Best-effort: a missing
+    SmartGraphical root, an unavailable interpreter, or any error skips the pass
+    silently — it enriches the audit, never gates it.
     """
     if not sg_root:
-        return 0
+        return 0, {}
     from sr_agent.guardrails.sanitize import sanitize as _sanitize
     from sr_agent.tools.smartgraphical import run_smartgraphical, sg_to_findings
 
     written = 0
+    graphs: dict[str, dict] = {}
     for file_rel in files:
         try:
-            sg_findings, _graph = run_smartgraphical(audit_root / file_rel, audit_root, sg_root)
+            sg_findings, graph = run_smartgraphical(audit_root / file_rel, audit_root, sg_root)
         except Exception as e:
             progress.emit(ProgressEvent.stage1_done, f"SmartGraphical skipped ({type(e).__name__})")
-            return written
+            return written, graphs
+        if graph:
+            graphs[file_rel] = graph
         for sf, finding in zip(sg_findings, sg_to_findings(sg_findings, file_rel)):
             payload = finding.model_dump()
             clean = _sanitize(f"{sf.message} — {sf.remediation_hint}".strip(" —"))
@@ -160,7 +165,7 @@ def _run_smartgraphical_analysis(
                 principal=session.principal,
             )
             written += 1
-    return written
+    return written, graphs
 
 
 def _context_provider(audit_root: Path):
@@ -209,6 +214,7 @@ def start_audit(
     progress.emit(ProgressEvent.stage1_done, f"{len(stage1.priority_targets)} priority targets")
 
     # Static-analysis pass: deterministic findings from Slither (tool_output).
+    sg_graphs: dict = {}
     if run_static:
         unique_files: list[str] = []
         for target in stage1.priority_targets:
@@ -218,7 +224,7 @@ def start_audit(
         static_count = _run_static_analysis(audit_root, unique_files, session, memory, progress)
         if static_count:
             progress.emit(ProgressEvent.stage1_done, f"{static_count} static-analysis finding(s)")
-        sg_count = _run_smartgraphical_analysis(
+        sg_count, sg_graphs = _run_smartgraphical_analysis(
             audit_root, unique_files, session, memory, progress, smartgraphical_root
         )
         if sg_count:
@@ -234,6 +240,7 @@ def start_audit(
         targets=stage1.priority_targets,
         skipped=stage1.skipped_targets,
         stage1_notes=stage1.notes,
+        sg_graphs=sg_graphs,
     )
     save_state(state, runs_dir)
 
@@ -335,6 +342,15 @@ def _finish(
         src_file = finding.location.split(":")[0]
         if src_file in sigs:
             continue
+        # Prefer SmartGraphical's structural graph (accurate read/write +
+        # inheritance) when captured; fall back to the regex SIG.
+        sg_graph = (state.sg_graphs or {}).get(src_file)
+        if sg_graph:
+            try:
+                sigs[src_file] = build_sig_from_smartgraphical(sg_graph)
+                continue
+            except Exception:
+                pass
         src_path = audit_root / src_file
         if src_path.exists():
             try:

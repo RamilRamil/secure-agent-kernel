@@ -79,3 +79,15 @@ def test_combinations_section():
                          combinations=["Vault.sol: 2 interacting high+ findings → critical chain"])
     assert "## Combination Chains" in md
     assert "critical chain" in md
+
+
+def test_report_shows_all_engine_attributions():
+    findings = [
+        _f("SL-1", "high", engine="slither"),
+        _f("MY-1", "medium", engine="mythril"),
+        _f("SG-1", "high", engine="smartgraphical"),
+        _f("M-1", "high", engine="model"),
+    ]
+    md = generate_report("demo", findings)
+    for eng in ("slither", "mythril", "smartgraphical", "model"):
+        assert f"**Engine**: {eng}" in md

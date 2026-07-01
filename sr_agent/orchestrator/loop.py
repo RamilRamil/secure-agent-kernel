@@ -240,6 +240,22 @@ class OrchestratorLoop:
                 hits = search_code(params["pattern"], root)
                 body = "\n".join(f"{h.file}:{h.line}: {h.text}" for h in hits) or "(no matches)"
                 return wrap_data(body, tool="search_code", path=str(root))
+
+            if at == ActionType.analyze_transactions:
+                from sr_agent.config import config
+                from sr_agent.tools.onchain import (
+                    OnChainError, analyze_transactions, make_alchemy_fetcher,
+                )
+                try:
+                    fetcher = make_alchemy_fetcher(config.alchemy_api_key)
+                    res = analyze_transactions(
+                        params["address"], int(params.get("from_block", 0)),
+                        int(params.get("to_block", 0)), fetcher, focus=params.get("focus"),
+                    )
+                    body = "\n".join(res.notes) or "(no notable transactions)"
+                    return wrap_data(body, tool="analyze_transactions", path=params["address"])
+                except OnChainError as e:
+                    return wrap_data(f"TOOL ERROR: {e}", tool="analyze_transactions", path="")
         except ReadOnlyToolError as e:
             return wrap_data(f"TOOL ERROR: {e}", tool=at.value, path="")
         except KeyError as e:

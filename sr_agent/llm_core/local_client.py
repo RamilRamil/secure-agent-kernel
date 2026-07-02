@@ -98,11 +98,14 @@ class LocalClient:
         Falls back when the preferred model isn't pulled but the fallback is, or
         when Ollama is unreachable entirely (so `.available()` still gates it).
         """
-        primary = cls(model=preferred, host=host)
-        if primary.available():
-            return primary
-        alt = cls(model=fallback, host=host)
-        return alt if alt.available() else primary
+        # Prefer the fine-tuned model, then the stock instruct model, then whatever
+        # base model is actually pulled on this host — so chat works out of the box
+        # on a machine that only has DEFAULT_MODEL.
+        for name in (preferred, fallback, DEFAULT_MODEL):
+            candidate = cls(model=name, host=host)
+            if candidate.available():
+                return candidate
+        return cls(model=preferred, host=host)
 
     def generate(self, prompt: str, fmt: str | None = None) -> str:
         """Single-turn generation. Raises ModelUnavailableError if unreachable.

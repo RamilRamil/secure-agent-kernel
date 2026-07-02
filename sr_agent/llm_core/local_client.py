@@ -38,10 +38,19 @@ class ModelUnavailableError(Exception):
 class LocalClient:
     model: str = DEFAULT_MODEL
     host: str = DEFAULT_HOST
-    timeout_s: float = 180.0
+    # Generation can be slow on small hardware — measured ~8 min/PoC for
+    # qwen2.5-coder:3b. 180s was too short and caused spurious timeouts; a real
+    # PoC-drafting turn should escalate to relay rather than rely on this being
+    # fast (research R10/R11).
+    timeout_s: float = 600.0
 
     def available(self) -> bool:
-        """True if the Ollama server is up and the model is pulled."""
+        """Liveness: the Ollama server is up and the model is pulled.
+
+        Cheap (checks /api/tags). NOT sufficient to decide FR-011 "unavailable" —
+        a wedged server serves /api/tags fine while every generate hangs. Use
+        ready() for that decision. See ready() and research R10.
+        """
         try:
             with urllib.request.urlopen(f"{self.host}/api/tags", timeout=5) as r:
                 tags = json.loads(r.read())
@@ -50,6 +59,31 @@ class LocalClient:
         names = {m.get("name", "") for m in tags.get("models", [])}
         base = self.model.split(":")[0]
         return any(self.model == n or n.startswith(base + ":") for n in names)
+
+    def ready(self, probe_timeout_s: float = 15.0) -> bool:
+        """Readiness: the model can actually produce output right now.
+
+        A minimal `num_predict=1` generate probe with a short timeout — catches
+        the reachable-but-wedged case `available()` misses (research R10). This is
+        the check FR-011 keys on: "unavailable" means "fails ready()".
+        """
+        if not self.available():
+            return False
+        body = {
+            "model": self.model, "prompt": "ok", "stream": False,
+            "options": {"num_predict": 1},
+        }
+        req = urllib.request.Request(
+            f"{self.host}/api/generate",
+            data=json.dumps(body).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=probe_timeout_s) as r:
+                data = json.loads(r.read())
+        except Exception:
+            return False
+        return isinstance(data.get("response"), str)
 
     @classmethod
     def for_stage2(

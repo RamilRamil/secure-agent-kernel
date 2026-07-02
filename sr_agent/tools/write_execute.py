@@ -110,11 +110,25 @@ def run_tests(
     test_path: str | None = None,
     image: str = FOUNDRY_IMAGE,
     timeout_s: float = 180.0,
+    foundry_test_dir: str | None = None,
 ) -> TestResult:
-    """Run `forge test` inside the network-isolated sandbox."""
-    command = ["forge", "test"]
-    if test_path:
-        command += ["--match-path", test_path]
+    """Run `forge test` inside the network-isolated sandbox.
+
+    `foundry_test_dir` sets the Foundry test-discovery dir via the FOUNDRY_TEST
+    env override (audit-pack, contracts/poc-execution.md) — required when PoCs
+    live outside the default `test/` dir (e.g. `audit/poc/`), else forge reports
+    "No tests to run". `via_ir` and remappings are inherited from the default
+    profile unchanged.
+    """
+    if foundry_test_dir:
+        inner = "forge test"
+        if test_path:
+            inner += f" --match-path {test_path}"
+        command = ["sh", "-c", f"FOUNDRY_TEST={foundry_test_dir} {inner}"]
+    else:
+        command = ["forge", "test"]
+        if test_path:
+            command += ["--match-path", test_path]
 
     # The project workspace is mounted rw so forge can write build artifacts;
     # isolation comes from --network none + ephemeral container + dropped caps.

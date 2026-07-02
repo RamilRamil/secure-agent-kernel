@@ -12,9 +12,11 @@ from sr_agent.llm_core.schemas import AgentAction
 from sr_agent.memory.episodic import EpisodicMemory
 from sr_agent.models.action import Action, ActionType, ValidationStatus
 from sr_agent.models.audit import AuditSession
-from sr_agent.models.chat import MAX_TOOL_CALLS_PER_TURN, RoutingDecision
+from sr_agent.models.chat import MAX_TOOL_CALLS_PER_TURN, PoCStatusEvent, RoutingDecision
 from sr_agent.models.finding import Finding, Severity
 from sr_agent.models.memory import MemoryRecord, SourceType
+from sr_agent.tools.sandbox import DockerSandbox, SandboxError
+from sr_agent.tools.write_execute import run_tests, write_poc
 from sr_agent.orchestrator.action import validate_action
 from sr_agent.orchestrator.checkpoint import save_checkpoint
 from sr_agent.orchestrator.confirmation import (
@@ -48,6 +50,9 @@ class TurnResult:
     findings: list[Finding] = field(default_factory=list)
     pending_confirmation_id: str | None = None
     relay_request_id: str | None = None
+    # ConsequentialActionNotice (FR-008/R8) — what the pending confirmation will run.
+    pending_action_type: str | None = None
+    pending_action_params: dict = field(default_factory=dict)
 
 
 class OrchestratorLoop:
@@ -71,12 +76,20 @@ class OrchestratorLoop:
         session_facts_provider: Callable[[], str | None] | None = None,
         confirmations_dir: Path | None = None,
         confirmation_timeout_s: float = 300.0,
+        sandbox: DockerSandbox | None = None,
+        poc_dir: Path | None = None,
+        poc_generator: Callable[[str], str] | None = None,
     ) -> None:
         self._session = session
         self._memory = memory
         self._audit_root = audit_root
         self._confirmations_dir = confirmations_dir or config.confirmations_root
         self._confirmation_timeout_s = confirmation_timeout_s
+        # PoC execution (audit-pack, contracts/poc-execution.md): PoCs land in
+        # <audit_root>/audit/poc/ and run in the sandbox. Injectable for tests.
+        self._sandbox = sandbox or DockerSandbox()
+        self._poc_dir = poc_dir or (audit_root / "audit" / "poc")
+        self._poc_generator = poc_generator
         # Chat mode injects a ChatReasoningProvider (.complete() -> ReasoningOutcome).
         # The non-chat run() path lazily constructs a ClaudeClient instead — chat
         # never touches the paid API (Constitution V).
@@ -312,6 +325,8 @@ class OrchestratorLoop:
                 return TurnResult(
                     status="paused_confirmation", routing=routing,
                     pending_confirmation_id=req.confirmation_id,
+                    pending_action_type=action.action_type.value,
+                    pending_action_params=dict(action.params),
                     tool_calls=tool_calls, findings=turn_findings,
                 )
 
@@ -324,6 +339,40 @@ class OrchestratorLoop:
             answer="(per-turn tool-call budget reached — stopping this turn)",
             routing=routing, tool_calls=tool_calls, findings=turn_findings,
         )
+
+    def execute_confirmed(self, action: Action) -> tuple[str, PoCStatusEvent | None]:
+        """Execute a write_execute action AFTER out-of-band approval (US2/R9).
+
+        Called only from the resume path, once a human has approved the pending
+        confirmation. Returns (human-readable summary, PoC status event to record).
+        The generator's/tool's output is data, executed only in the sandbox.
+        """
+        at = action.action_type
+        finding_id = str(action.params.get("finding_id", "UNKNOWN"))
+
+        if at == ActionType.write_poc:
+            res = write_poc(finding_id, self._poc_dir, generator=self._poc_generator)
+            event = PoCStatusEvent(finding_id=finding_id, status="written", poc_path=str(res.path))
+            return (f"PoC written to {res.path}", event)
+
+        if at == ActionType.run_tests:
+            test_path = action.params.get("test_path")
+            try:
+                result = run_tests(
+                    self._audit_root, self._sandbox, test_path=test_path,
+                    foundry_test_dir="audit/poc",  # PoCs live outside default test/ (poc-execution.md)
+                )
+            except SandboxError as e:
+                event = PoCStatusEvent(finding_id=finding_id, status="errored", skip_reason=None)
+                return (f"run_tests could not execute: {e}", event)
+            # Mechanical status only — a pass means a reproduction exists, NOT a
+            # confirmed/safe verdict (Constitution II).
+            status = "passed" if result.passed else "failed"
+            summary = f"forge test {'PASSED' if result.passed else 'FAILED'} (exit {result.exit_code})"
+            return (summary, PoCStatusEvent(finding_id=finding_id, status=status))
+
+        # Any other write_execute (e.g. deploy_test_contract) — no PoC status.
+        return (self._dispatch(action), None)
 
     def _persist_finding(self, agent_action: AgentAction) -> Finding | None:
         """Validate and persist a finding reported by the LLM."""

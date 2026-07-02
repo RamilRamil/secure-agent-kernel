@@ -246,7 +246,9 @@ class OrchestratorLoop:
         facts = self._session_facts_provider() if self._session_facts_provider else None
         routing: RoutingDecision | None = None
 
-        while tool_calls <= MAX_TOOL_CALLS_PER_TURN:
+        # Strict `<` — at most MAX_TOOL_CALLS_PER_TURN tool dispatches (SC-005:
+        # the per-turn tool-call count never exceeds the configured budget).
+        while tool_calls < MAX_TOOL_CALLS_PER_TURN:
             messages = build_messages(
                 session=self._session, system_prompt=system_prompt,
                 tool_output=last_tool_output, session_facts=facts,

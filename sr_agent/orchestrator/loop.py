@@ -212,7 +212,10 @@ class OrchestratorLoop:
         record = MemoryRecord(
             project_id=self._session.principal.project_id,
             target=payload.location.split(":")[0],
-            source_type=SourceType.llm_inference,
+            # A finding produced by the reasoning provider (local model or relay) is
+            # external_llm_output — same tier planner/stage2.py uses. NOT llm_inference
+            # (automation != authoring). Never promoted to human_input (Constitution I).
+            source_type=SourceType.external_llm_output,
             tool=None,
             session_id=self._session.session_id,
             finding=finding.model_dump(),

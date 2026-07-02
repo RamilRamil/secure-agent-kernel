@@ -25,7 +25,7 @@ DEFAULT_MODEL = "qwen2.5-coder:3b"
 DEFAULT_HOST = "http://localhost:11434"
 
 # Stage 2 model preference (T091): the fine-tuned MI-resistant model if it has
-# been built (`ollama create sr-stage2`), else a stock instruct model.
+# been built (`ollama create sr-stage2`), else the best stock model available.
 STAGE2_MODEL = "sr-stage2"
 STAGE2_FALLBACK = "qwen3:4b"
 
@@ -57,8 +57,36 @@ class LocalClient:
         except Exception:
             return False
         names = {m.get("name", "") for m in tags.get("models", [])}
-        base = self.model.split(":")[0]
-        return any(self.model == n or n.startswith(base + ":") for n in names)
+        # An explicit tag must match exactly — `qwen2.5-coder:3b` being pulled must
+        # NOT report `qwen2.5-coder:7b` as available. Only an un-tagged name matches
+        # any tag of that base.
+        if ":" in self.model:
+            return self.model in names
+        return any(n == self.model or n.startswith(self.model + ":") for n in names)
+
+    def warm(self, timeout_s: float = 1200.0, keep_alive: str = "30m") -> bool:
+        """Load the model into memory and keep it resident.
+
+        Cold load of a larger model can take minutes — far longer than ready()'s
+        short probe. Call once at session start so the first real turn's readiness
+        check doesn't fail on the load. keep_alive holds it in memory across the
+        session's turns.
+        """
+        body = {
+            "model": self.model, "prompt": "ok", "stream": False,
+            "options": {"num_predict": 1}, "keep_alive": keep_alive,
+        }
+        req = urllib.request.Request(
+            f"{self.host}/api/generate",
+            data=json.dumps(body).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=timeout_s) as r:
+                data = json.loads(r.read())
+        except Exception:
+            return False
+        return isinstance(data.get("response"), str)
 
     def ready(self, probe_timeout_s: float = 15.0) -> bool:
         """Readiness: the model can actually produce output right now.
@@ -98,10 +126,11 @@ class LocalClient:
         Falls back when the preferred model isn't pulled but the fallback is, or
         when Ollama is unreachable entirely (so `.available()` still gates it).
         """
-        # Prefer the fine-tuned model, then the stock instruct model, then whatever
-        # base model is actually pulled on this host — so chat works out of the box
-        # on a machine that only has DEFAULT_MODEL.
-        for name in (preferred, fallback, DEFAULT_MODEL):
+        # Prefer the fine-tuned model, then qwen2.5-coder:7b (far more reliable at
+        # tool-selection than the 3b — live smoke: 3b failed to extract a path into
+        # read_file, 7b succeeded), then the stock fallback, then whatever base is
+        # actually pulled — so chat works out of the box on a machine with only 3b.
+        for name in (preferred, "qwen2.5-coder:7b", fallback, DEFAULT_MODEL):
             candidate = cls(model=name, host=host)
             if candidate.available():
                 return candidate

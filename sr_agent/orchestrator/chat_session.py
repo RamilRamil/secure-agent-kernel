@@ -111,6 +111,33 @@ def load_session(
     return ChatSession.model_validate(latest.payload)
 
 
+def render_roadmap(session_id: str, project_id: str, memory: EpisodicMemory) -> str:
+    """Render the findings roadmap as a markdown table (R12/FR-014).
+
+    A regenerable VIEW over the append-only PoCStatusEvent history — never a
+    parallel store. Latest status wins per finding; a skipped row always shows
+    its reason (no silent omission). Mechanical status only, never a verdict.
+    """
+    records = memory.load(project_id, _target(session_id))
+    latest: dict[str, dict] = {}
+    for r in records:
+        if r.payload_kind == "poc_status" and r.payload:
+            fid = r.payload["finding_id"]
+            prev = latest.get(fid)
+            if prev is None or r.timestamp >= prev["_ts"]:
+                latest[fid] = {**r.payload, "_ts": r.timestamp}
+
+    if not latest:
+        return "No PoC activity recorded yet."
+
+    lines = ["| finding | status | note |", "|---|---|---|"]
+    for fid in sorted(latest):
+        ev = latest[fid]
+        note = ev.get("skip_reason") or ev.get("poc_path") or ""
+        lines.append(f"| {fid} | {ev['status']} | {note} |")
+    return "\n".join(lines)
+
+
 def load_turns(
     session_id: str, project_id: str, memory: EpisodicMemory
 ) -> list[ChatTurn]:

@@ -53,6 +53,8 @@ class TurnResult:
     # ConsequentialActionNotice (FR-008/R8) — what the pending confirmation will run.
     pending_action_type: str | None = None
     pending_action_params: dict = field(default_factory=dict)
+    # Short orchestrator-written summaries of tools called this turn (US4 grounding).
+    tool_summaries: list[str] = field(default_factory=list)
 
 
 class OrchestratorLoop:
@@ -237,6 +239,7 @@ class OrchestratorLoop:
 
         tool_calls = 0
         turn_findings: list[Finding] = []
+        tool_summaries: list[str] = []
         # The user's own message is human_input, but it enters model context as
         # DATA like everything else — its wording carries no authority (FR-004).
         last_tool_output: str | None = wrap_data(user_message, tool="user", path="chat")
@@ -292,6 +295,7 @@ class OrchestratorLoop:
                 return TurnResult(
                     status="completed", answer=agent_action.reasoning_summary,
                     routing=routing, tool_calls=tool_calls, findings=turn_findings,
+                    tool_summaries=tool_summaries,
                 )
 
             # Unknown next_action → feed the rejection back as data, don't crash.
@@ -332,12 +336,15 @@ class OrchestratorLoop:
 
             # Read-only / approved dispatch — result feeds the next iteration as DATA.
             last_tool_output = self._dispatch(action)
+            detail = action.params.get("path") or action.params.get("pattern") or ""
+            tool_summaries.append(f"{action.action_type.value} {detail}".strip())
             tool_calls += 1
 
         return TurnResult(
             status="budget_exhausted",
             answer="(per-turn tool-call budget reached — stopping this turn)",
             routing=routing, tool_calls=tool_calls, findings=turn_findings,
+            tool_summaries=tool_summaries,
         )
 
     def execute_confirmed(self, action: Action) -> tuple[str, PoCStatusEvent | None]:

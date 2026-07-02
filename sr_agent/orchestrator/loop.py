@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Callable
 
 from sr_agent.config import config
 from sr_agent.guardrails.sanitize import sanitize
@@ -11,6 +12,7 @@ from sr_agent.llm_core.schemas import AgentAction
 from sr_agent.memory.episodic import EpisodicMemory
 from sr_agent.models.action import Action, ActionType, ValidationStatus
 from sr_agent.models.audit import AuditSession
+from sr_agent.models.chat import MAX_TOOL_CALLS_PER_TURN, RoutingDecision
 from sr_agent.models.finding import Finding, Severity
 from sr_agent.models.memory import MemoryRecord, SourceType
 from sr_agent.orchestrator.action import validate_action
@@ -36,6 +38,18 @@ class AuditResult:
     stop_reason: str
 
 
+@dataclass
+class TurnResult:
+    """Outcome of one chat turn (feature 003, run_turn)."""
+    status: str  # completed | paused_confirmation | paused_relay | blocked_local_unavailable | budget_exhausted
+    answer: str = ""
+    routing: RoutingDecision | None = None
+    tool_calls: int = 0
+    findings: list[Finding] = field(default_factory=list)
+    pending_confirmation_id: str | None = None
+    relay_request_id: str | None = None
+
+
 class OrchestratorLoop:
     """Main ReAct loop for Stage 1 and Stage 3.
 
@@ -52,6 +66,9 @@ class OrchestratorLoop:
         session: AuditSession,
         memory: EpisodicMemory,
         audit_root: Path,
+        *,
+        reasoning_provider: object | None = None,
+        session_facts_provider: Callable[[], str | None] | None = None,
         confirmations_dir: Path | None = None,
         confirmation_timeout_s: float = 300.0,
     ) -> None:
@@ -60,7 +77,12 @@ class OrchestratorLoop:
         self._audit_root = audit_root
         self._confirmations_dir = confirmations_dir or config.confirmations_root
         self._confirmation_timeout_s = confirmation_timeout_s
-        self._llm = ClaudeClient()
+        # Chat mode injects a ChatReasoningProvider (.complete() -> ReasoningOutcome).
+        # The non-chat run() path lazily constructs a ClaudeClient instead — chat
+        # never touches the paid API (Constitution V).
+        self._reasoning = reasoning_provider
+        self._session_facts_provider = session_facts_provider
+        self._audit_client: ClaudeClient | None = None
         self._findings: list[Finding] = []
 
         # Verify tool descriptions haven't been tampered with
@@ -84,8 +106,10 @@ class OrchestratorLoop:
             )
 
             # ── LLM call ─────────────────────────────────────────────────
+            if self._audit_client is None:
+                self._audit_client = ClaudeClient()
             try:
-                agent_action = self._llm.complete(messages)
+                agent_action = self._audit_client.complete(messages)
             except ValueError as e:
                 logger.warning("Malformed LLM response (iter %d): %s", iterations, e)
                 continue
@@ -183,6 +207,122 @@ class OrchestratorLoop:
             iterations=iterations,
             completed=False,
             stop_reason="max_iterations_reached",
+        )
+
+    def run_turn(self, user_message: str, system_prompt: str) -> TurnResult:
+        """Execute one chat turn (feature 003, FR-006/R4).
+
+        Local-first reasoning via the injected provider, read-only tool calls
+        bounded by a per-turn budget that resets every turn. The session spans
+        unbounded turns; a single turn stops at MAX_TOOL_CALLS_PER_TURN.
+
+        Returns control to the caller (does NOT block) on a paused outcome —
+        blocked_local_unavailable (FR-011), paused_relay (R3), or
+        paused_confirmation (R8: the OOB gate is filed, not polled here).
+        """
+        assert self._reasoning is not None, "run_turn requires a reasoning_provider"
+
+        tool_calls = 0
+        turn_findings: list[Finding] = []
+        # The user's own message is human_input, but it enters model context as
+        # DATA like everything else — its wording carries no authority (FR-004).
+        last_tool_output: str | None = wrap_data(user_message, tool="user", path="chat")
+        facts = self._session_facts_provider() if self._session_facts_provider else None
+        routing: RoutingDecision | None = None
+
+        while tool_calls <= MAX_TOOL_CALLS_PER_TURN:
+            messages = build_messages(
+                session=self._session, system_prompt=system_prompt,
+                tool_output=last_tool_output, session_facts=facts,
+                model=config.stage2_model,
+            )
+            try:
+                outcome = self._reasoning.complete(messages)
+            except ValueError as e:  # malformed model JSON — do not fall to relay
+                logger.warning("chat turn: malformed model response: %s", e)
+                return TurnResult(
+                    status="completed", answer="(could not parse a valid response)",
+                    tool_calls=tool_calls, findings=turn_findings,
+                )
+
+            routing = RoutingDecision(
+                tier=outcome.tier,
+                escalation_trigger=outcome.escalation_trigger,
+                escalation_source=outcome.escalation_source,
+            )
+
+            if outcome.kind == "blocked_local_unavailable":
+                return TurnResult(
+                    status="blocked_local_unavailable", routing=routing,
+                    tool_calls=tool_calls, findings=turn_findings,
+                )
+            if outcome.kind == "paused_relay":
+                return TurnResult(
+                    status="paused_relay", routing=routing,
+                    relay_request_id=outcome.relay_request_id,
+                    tool_calls=tool_calls, findings=turn_findings,
+                )
+
+            agent_action = outcome.agent_action
+            assert agent_action is not None  # kind == "action" guarantees this
+
+            if agent_action.finding:
+                finding = self._persist_finding(agent_action)
+                if finding:
+                    turn_findings.append(finding)
+                    self._findings.append(finding)
+
+            # Terminal: the model answered directly (no tool). "complete" carries
+            # the answer in reasoning_summary; "escalate" ends the turn too.
+            na = agent_action.next_action
+            if na in ("complete", ActionType.escalate.value):
+                return TurnResult(
+                    status="completed", answer=agent_action.reasoning_summary,
+                    routing=routing, tool_calls=tool_calls, findings=turn_findings,
+                )
+
+            # Unknown next_action → feed the rejection back as data, don't crash.
+            if na not in ActionType._value2member_map_:
+                last_tool_output = wrap_data(
+                    f"ACTION REJECTED: unknown next_action {na!r}",
+                    tool="orchestrator", path="",
+                )
+                tool_calls += 1
+                continue
+
+            action = Action(action_type=ActionType(na), params=agent_action.tool_params)
+            result = validate_action(action, self._audit_root)
+            if result.status == ValidationStatus.rejected:
+                last_tool_output = wrap_data(
+                    f"ACTION REJECTED: {result.rejection_reason}",
+                    tool="orchestrator", path="",
+                )
+                tool_calls += 1
+                continue
+
+            # Irreversible write_execute → file the OOB confirmation and PAUSE the
+            # turn (R8). No shortcut around the gate (Constitution II); the CLI
+            # resumes once the human approves out-of-band.
+            if action.human_confirmation is False:
+                req = request_confirmation(action, self._confirmations_dir)
+                logger.info(
+                    "chat turn paused for confirmation %s (action %s)",
+                    req.confirmation_id, action.action_type.value,
+                )
+                return TurnResult(
+                    status="paused_confirmation", routing=routing,
+                    pending_confirmation_id=req.confirmation_id,
+                    tool_calls=tool_calls, findings=turn_findings,
+                )
+
+            # Read-only / approved dispatch — result feeds the next iteration as DATA.
+            last_tool_output = self._dispatch(action)
+            tool_calls += 1
+
+        return TurnResult(
+            status="budget_exhausted",
+            answer="(per-turn tool-call budget reached — stopping this turn)",
+            routing=routing, tool_calls=tool_calls, findings=turn_findings,
         )
 
     def _persist_finding(self, agent_action: AgentAction) -> Finding | None:

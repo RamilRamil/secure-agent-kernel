@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from sr_agent.models.action import (
     Action, ActionClass, ActionType, ValidationResult, ValidationStatus,
     ACTION_CLASS_MAP, REVERSIBLE,
 )
 from sr_agent.tools.registry import TOOL_REGISTRY
+
+if TYPE_CHECKING:
+    from sr_agent.orchestrator.pack import CapabilityPack
 
 logger = logging.getLogger(__name__)
 
@@ -23,37 +27,61 @@ class ActionValidationError(Exception):
     pass
 
 
-def validate_action(action: Action, audit_root: Path) -> ValidationResult:
-    """Deterministic gate before any action is executed.
+def validate_action(
+    action: Action, audit_root: Path, pack: "CapabilityPack | None" = None
+) -> ValidationResult:
+    """Deterministic gate before any action is executed — the kernel MECHANISM.
 
     Checks in order:
-    1. action_type is in TOOL_REGISTRY whitelist
-    2. params conform to per-tool schema (types, path containment)
-    3. action_class and reversibility are annotated
+    1. action_type is in the whitelist (pack.actions, or the legacy registry)
+    2. action_class and reversibility are annotated (from the pack's ActionSpec)
+    3. params conform to the per-action schema (types, path containment)
     4. WRITE_EXECUTE actions flagged as requiring out-of-band confirmation
+
+    The pack supplies each action's *class*, reversibility, and param validator
+    (`pack.actions`), but the confirmation requirement is **kernel-derived** from
+    `action_class == write_execute` (FR-005, R2) — a pack has no field to skip
+    it. `write_execute` is exactly the legacy `REQUIRES_OOB_CONFIRMATION` set, so
+    this is behavior-identical. When `pack is None`, the legacy audit-coupled path
+    runs (transitional, until callers pass AUDIT_PACK and US1 removes it).
 
     Returns ValidationResult — never raises. Caller decides how to handle rejection.
     """
-    # ── 1. Whitelist check ───────────────────────────────────────────────
-    if action.action_type.value not in TOOL_REGISTRY:
-        return ValidationResult(
-            status=ValidationStatus.rejected,
-            rejection_reason=f"Unknown action type: {action.action_type.value!r}",
-        )
+    key = action.action_type.value if hasattr(action.action_type, "value") else str(action.action_type)
 
-    # ── 2. Annotate class and reversibility ──────────────────────────────
-    action.action_class = ACTION_CLASS_MAP[action.action_type]
-    action.is_reversible = REVERSIBLE[action.action_type]
+    # ── 1. Whitelist + 2. annotate class/reversibility ───────────────────
+    if pack is not None:
+        spec = pack.actions.get(key)
+        if spec is None:
+            return ValidationResult(
+                status=ValidationStatus.rejected,
+                rejection_reason=f"Unknown action type: {key!r}",
+            )
+        action.action_class = spec.action_class
+        action.is_reversible = spec.is_reversible
+        validate_params = spec.validate_params
+    else:
+        if key not in TOOL_REGISTRY:
+            return ValidationResult(
+                status=ValidationStatus.rejected,
+                rejection_reason=f"Unknown action type: {key!r}",
+            )
+        action.action_class = ACTION_CLASS_MAP[action.action_type]
+        action.is_reversible = REVERSIBLE[action.action_type]
+        validate_params = _validate_params
 
-    # ── 3. Per-tool param validation ─────────────────────────────────────
-    reason = _validate_params(action, audit_root)
+    # ── 3. Per-action param validation (fail-closed: kernel still checks
+    #        path-containment below regardless of what the pack validator does) ──
+    reason = validate_params(action, audit_root)
     if reason:
         return ValidationResult(status=ValidationStatus.rejected, rejection_reason=reason)
 
-    # ── 4. Write/execute flag ─────────────────────────────────────────────
-    if action.action_type in REQUIRES_OOB_CONFIRMATION:
+    # ── 4. Confirmation — KERNEL RULE, derived from class (FR-005). A pack
+    #        cannot mark a write_execute action as skip-confirmation: there is
+    #        no such field, and the requirement is computed here, not read. ──
+    if action.action_class == ActionClass.write_execute:
         action.human_confirmation = False  # pending — must be set True before execution
-        logger.info("Action %s requires out-of-band human confirmation", action.action_type)
+        logger.info("Action %s requires out-of-band human confirmation", key)
 
     return ValidationResult(status=ValidationStatus.approved)
 

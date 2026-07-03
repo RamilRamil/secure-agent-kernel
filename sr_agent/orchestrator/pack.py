@@ -27,7 +27,6 @@ if TYPE_CHECKING:
 
     from sr_agent.guardrails.escalation import EscalationResult
     from sr_agent.llm_core.schemas import AgentAction
-    from sr_agent.memory.episodic import EpisodicMemory
     from sr_agent.models.action import Action, ActionClass
     from sr_agent.tools.registry import ToolDefinition
     from sr_agent.tools.sandbox import DockerSandbox
@@ -52,14 +51,20 @@ class PackContext:
     """The narrow, least-privilege surface passed to pack callables (R8).
 
     Never the loop, never kernel internals — only kernel-sanctioned capabilities.
-    Pack output re-enters context through `wrap_data`; memory writes go through
-    `memory` but the kernel sets the source tier (a pack cannot forge human_input).
+    Pack output re-enters context through `wrap_data`.
+
+    Deliberately exposes NO memory handle (FR-006, strengthened during
+    implementation 2026-07-03): a pack has no way to write memory, so it
+    structurally cannot forge a `human_input`-tier record. The kernel owns every
+    memory write and sets the source tier itself; the pack only *returns* domain
+    artifacts (`persist_finding` returns the finding; `execute_confirmed` returns
+    a status event) which the kernel then persists. Prior findings needed by
+    `domain_escalation` are passed to it as arguments, not read from here.
     """
     audit_root: "Path"
     sandbox: "DockerSandbox"
     poc_dir: "Path"
     wrap_data: Callable[..., str]
-    memory: "EpisodicMemory"
 
 
 @dataclass(frozen=True)

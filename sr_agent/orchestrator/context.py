@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from sr_agent.models.audit import AuditSession
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from sr_agent.models.session import Session
 
 # Per-model context window limits (in tokens).
 # Stage 2 (Qwen3-4B) gets one function at a time — its 32K window is sufficient.
@@ -36,7 +39,7 @@ def _estimate_tokens(text: str) -> int:
 
 
 def build_messages(
-    session: AuditSession,
+    session: "Session",
     system_prompt: str,
     tool_output: str | None = None,
     knowledge_chunks: list[str] | None = None,

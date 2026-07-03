@@ -1,6 +1,6 @@
 import pytest
 
-from sr_agent.guardrails.severity import check_severity
+from sr_agent.packs.audit.guardrails.severity import check_severity
 from sr_agent.models.finding import Finding, Severity
 
 

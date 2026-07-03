@@ -4,7 +4,7 @@ import pytest
 from pathlib import Path
 
 from sr_agent.models.finding import BastetTag, Severity
-from sr_agent.tools.smartgraphical import (
+from sr_agent.packs.audit.tools.smartgraphical import (
     SGFinding,
     SmartGraphicalError,
     parse_sg_findings,

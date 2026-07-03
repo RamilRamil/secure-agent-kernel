@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from sr_agent.llm_core.schemas import AgentAction, EscalationTrigger
 from sr_agent.models.action import Action, ActionType, ValidationResult
-from sr_agent.models.audit import Principal
+from sr_agent.models.principal import Principal
 from sr_agent.models.memory import SourceType
 
 # Per-turn tool-call budget (FR-006 / research R4). The chat *session* spans an

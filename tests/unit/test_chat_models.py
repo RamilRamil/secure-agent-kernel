@@ -5,7 +5,7 @@ import pytest
 from pydantic import ValidationError
 
 from sr_agent.models.action import Action, ActionType, ValidationResult, ValidationStatus
-from sr_agent.models.audit import Principal
+from sr_agent.packs.audit.session import Principal
 from sr_agent.models.chat import (
     MAX_TOOL_CALLS_PER_TURN,
     ChatSession,

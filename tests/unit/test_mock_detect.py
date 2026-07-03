@@ -1,6 +1,6 @@
 """Mock/stub PoC detection tests (T052)."""
 from sr_agent.packs.audit.guardrails.mock_detect import check_test_realism
-from sr_agent.models.finding import FindingStatus
+from sr_agent.packs.audit.finding import FindingStatus
 
 _REAL_POC = """
 function test_exploit() public {

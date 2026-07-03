@@ -3,28 +3,27 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 from sr_agent.config import config
-from sr_agent.guardrails.sanitize import sanitize
 from sr_agent.llm_core.claude_client import ClaudeClient
 from sr_agent.llm_core.schemas import AgentAction
 from sr_agent.memory.episodic import EpisodicMemory
 from sr_agent.models.action import Action, ActionType, ValidationStatus
-from sr_agent.models.audit import AuditSession
 from sr_agent.models.chat import MAX_TOOL_CALLS_PER_TURN, PoCStatusEvent, RoutingDecision
-from sr_agent.models.finding import Finding, Severity
 from sr_agent.models.memory import MemoryRecord, SourceType
-from sr_agent.tools.sandbox import DockerSandbox, SandboxError
-from sr_agent.tools.write_execute import run_tests, write_poc
+from sr_agent.tools.sandbox import DockerSandbox
 from sr_agent.orchestrator.action import validate_action
-from sr_agent.orchestrator.checkpoint import save_checkpoint
 from sr_agent.orchestrator.confirmation import (
     ConfirmationStatus, check_confirmation, request_confirmation,
 )
 from sr_agent.orchestrator.context import build_messages, wrap_data
-from sr_agent.tools.readonly import ReadOnlyToolError, read_file, search_code
+from sr_agent.orchestrator.pack import PackContext
 from sr_agent.tools.registry import verify_all_hashes
+
+if TYPE_CHECKING:
+    from sr_agent.models.session import Session
+    from sr_agent.orchestrator.pack import CapabilityPack
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +33,7 @@ MAX_ITERATIONS = 50
 @dataclass
 class AuditResult:
     session_id: str
-    findings: list[Finding]
+    findings: list  # pack-domain findings (e.g. audit Finding); kernel treats opaque
     iterations: int
     completed: bool
     stop_reason: str
@@ -47,7 +46,7 @@ class TurnResult:
     answer: str = ""
     routing: RoutingDecision | None = None
     tool_calls: int = 0
-    findings: list[Finding] = field(default_factory=list)
+    findings: list = field(default_factory=list)
     pending_confirmation_id: str | None = None
     relay_request_id: str | None = None
     # ConsequentialActionNotice (FR-008/R8) — what the pending confirmation will run.
@@ -70,10 +69,11 @@ class OrchestratorLoop:
 
     def __init__(
         self,
-        session: AuditSession,
+        session: "Session",
         memory: EpisodicMemory,
         audit_root: Path,
         *,
+        pack: "CapabilityPack",
         reasoning_provider: object | None = None,
         session_facts_provider: Callable[[], str | None] | None = None,
         confirmations_dir: Path | None = None,
@@ -81,6 +81,7 @@ class OrchestratorLoop:
         sandbox: DockerSandbox | None = None,
         poc_dir: Path | None = None,
         poc_generator: Callable[[str], str] | None = None,
+        checkpoint_fn: Callable | None = None,
     ) -> None:
         self._session = session
         self._memory = memory
@@ -98,7 +99,17 @@ class OrchestratorLoop:
         self._reasoning = reasoning_provider
         self._session_facts_provider = session_facts_provider
         self._audit_client: ClaudeClient | None = None
-        self._findings: list[Finding] = []
+        self._findings: list = []
+
+        # The pack supplies dispatch/execute_confirmed/persist_finding; the loop
+        # keeps the control flow + invariants. Pack callables get only this narrow
+        # PackContext (least privilege) — never the loop, never memory-write.
+        self._pack = pack
+        self._checkpoint_fn = checkpoint_fn
+        self._ctx = PackContext(
+            audit_root=audit_root, sandbox=self._sandbox,
+            poc_dir=self._poc_dir, wrap_data=wrap_data, poc_generator=poc_generator,
+        )
 
         # Verify tool descriptions haven't been tampered with
         verify_all_hashes()
@@ -153,7 +164,8 @@ class OrchestratorLoop:
                 )
 
             if agent_action.next_action == "complete":
-                save_checkpoint(self._session, self._session.current_stage, self._memory)
+                if self._checkpoint_fn is not None:
+                    self._checkpoint_fn(self._session, self._memory)
                 return AuditResult(
                     session_id=self._session.session_id,
                     findings=self._findings,
@@ -167,7 +179,7 @@ class OrchestratorLoop:
                 action_type=ActionType(agent_action.next_action),
                 params=agent_action.tool_params,
             )
-            result = validate_action(action, self._audit_root)
+            result = validate_action(action, self._audit_root, self._pack)
 
             if result.status == ValidationStatus.rejected:
                 logger.warning(
@@ -214,7 +226,7 @@ class OrchestratorLoop:
                 )
 
             # ── Execute (stub — tools implemented in later phases) ───────
-            last_tool_output = self._dispatch(action)
+            last_tool_output = self._pack.dispatch(action, self._ctx)
 
         return AuditResult(
             session_id=self._session.session_id,
@@ -310,7 +322,7 @@ class OrchestratorLoop:
                 continue
 
             action = Action(action_type=ActionType(na), params=agent_action.tool_params)
-            result = validate_action(action, self._audit_root)
+            result = validate_action(action, self._audit_root, self._pack)
             if result.status == ValidationStatus.rejected:
                 last_tool_output = wrap_data(
                     f"ACTION REJECTED: {result.rejection_reason}",
@@ -337,7 +349,7 @@ class OrchestratorLoop:
                 )
 
             # Read-only / approved dispatch — result feeds the next iteration as DATA.
-            last_tool_output = self._dispatch(action)
+            last_tool_output = self._pack.dispatch(action, self._ctx)
             detail = action.params.get("path") or action.params.get("pattern") or ""
             tool_summaries.append(f"{action.action_type.value} {detail}".strip())
             tool_calls += 1
@@ -352,119 +364,36 @@ class OrchestratorLoop:
     def execute_confirmed(self, action: Action) -> tuple[str, PoCStatusEvent | None]:
         """Execute a write_execute action AFTER out-of-band approval (US2/R9).
 
-        Called only from the resume path, once a human has approved the pending
-        confirmation. Returns (human-readable summary, PoC status event to record).
-        The generator's/tool's output is data, executed only in the sandbox.
+        Delegates to the pack; reached only from the resume path once a human has
+        approved the pending confirmation (never from within a model turn). The
+        pack runs it inside the kernel-provided sandbox (PackContext).
         """
-        at = action.action_type
-        finding_id = str(action.params.get("finding_id", "UNKNOWN"))
+        return self._pack.execute_confirmed(action, self._ctx)
 
-        if at == ActionType.write_poc:
-            res = write_poc(finding_id, self._poc_dir, generator=self._poc_generator)
-            event = PoCStatusEvent(finding_id=finding_id, status="written", poc_path=str(res.path))
-            return (f"PoC written to {res.path}", event)
+    def _persist_finding(self, agent_action: AgentAction):
+        """Persist a finding the model reported.
 
-        if at == ActionType.run_tests:
-            test_path = action.params.get("test_path")
-            try:
-                result = run_tests(
-                    self._audit_root, self._sandbox, test_path=test_path,
-                    foundry_test_dir="audit/poc",  # PoCs live outside default test/ (poc-execution.md)
-                )
-            except SandboxError as e:
-                event = PoCStatusEvent(finding_id=finding_id, status="errored", skip_reason=None)
-                return (f"run_tests could not execute: {e}", event)
-            # Mechanical status only — a pass means a reproduction exists, NOT a
-            # confirmed/safe verdict (Constitution II).
-            status = "passed" if result.passed else "failed"
-            summary = f"forge test {'PASSED' if result.passed else 'FAILED'} (exit {result.exit_code})"
-            return (summary, PoCStatusEvent(finding_id=finding_id, status=status))
-
-        # Any other write_execute (e.g. deploy_test_contract) — no PoC status.
-        return (self._dispatch(action), None)
-
-    def _persist_finding(self, agent_action: AgentAction) -> Finding | None:
-        """Validate and persist a finding reported by the LLM."""
-        payload = agent_action.finding
-        if payload is None:
+        The pack builds + validates the domain Finding; the KERNEL owns the write
+        and sets source_type=external_llm_output (FR-006) — a pack cannot set the
+        tier or reach memory. Never promoted to human_input (Constitution I).
+        """
+        finding = self._pack.persist_finding(agent_action.finding, self._ctx)
+        if finding is None:
             return None
 
-        try:
-            finding = Finding(
-                finding_id=payload.finding_id,
-                location=payload.location,
-                function_name=payload.function_name,
-                severity=Severity(payload.severity),
-                preconditions=payload.preconditions,
-                mitigations_present=payload.mitigations_present,
-            )
-        except Exception as e:
-            logger.warning("Invalid finding payload: %s", e)
-            return None
-
-        # Sanitize notes before they enter memory
-        sanitized = sanitize(payload.notes)
-        if sanitized.flags:
-            logger.info("Finding notes sanitized, flags: %s", sanitized.flags)
-
+        location = getattr(finding, "location", "") or ""
         record = MemoryRecord(
             project_id=self._session.principal.project_id,
-            target=payload.location.split(":")[0],
-            # A finding produced by the reasoning provider (local model or relay) is
-            # external_llm_output — same tier planner/stage2.py uses. NOT llm_inference
-            # (automation != authoring). Never promoted to human_input (Constitution I).
+            target=location.split(":")[0],
             source_type=SourceType.external_llm_output,
             tool=None,
             session_id=self._session.session_id,
             finding=finding.model_dump(),
         )
         self._memory.write(record, principal=self._session.principal)
-        self._session.finding_ids.append(payload.finding_id)
+        # session.finding_ids is pack-session bookkeeping — append if the session
+        # tracks it (kernel Session protocol doesn't require it).
+        ids = getattr(self._session, "finding_ids", None)
+        if ids is not None:
+            ids.append(getattr(finding, "finding_id", None))
         return finding
-
-    def _dispatch(self, action: Action) -> str:
-        """Execute a validated action. Read-only tools are live; others are stubs.
-
-        Tool output is always wrapped in [DATA START]..[DATA END] — it is
-        external data that informs the LLM but is never executed as commands.
-        """
-        at = action.action_type
-        params = action.params
-
-        try:
-            if at == ActionType.read_file:
-                content = read_file(params["path"], self._audit_root)
-                return wrap_data(content, tool="read_file", path=str(params.get("path", "")))
-
-            if at == ActionType.search_code:
-                root = params.get("root", str(self._audit_root))
-                hits = search_code(params["pattern"], root)
-                body = "\n".join(f"{h.file}:{h.line}: {h.text}" for h in hits) or "(no matches)"
-                return wrap_data(body, tool="search_code", path=str(root))
-
-            if at == ActionType.analyze_transactions:
-                from sr_agent.config import config
-                from sr_agent.tools.onchain import (
-                    OnChainError, analyze_transactions, make_alchemy_fetcher,
-                )
-                try:
-                    fetcher = make_alchemy_fetcher(config.alchemy_api_key)
-                    res = analyze_transactions(
-                        params["address"], int(params.get("from_block", 0)),
-                        int(params.get("to_block", 0)), fetcher, focus=params.get("focus"),
-                    )
-                    body = "\n".join(res.notes) or "(no notable transactions)"
-                    return wrap_data(body, tool="analyze_transactions", path=params["address"])
-                except OnChainError as e:
-                    return wrap_data(f"TOOL ERROR: {e}", tool="analyze_transactions", path="")
-        except ReadOnlyToolError as e:
-            return wrap_data(f"TOOL ERROR: {e}", tool=at.value, path="")
-        except KeyError as e:
-            return wrap_data(f"TOOL ERROR: missing required param {e}", tool=at.value, path="")
-
-        # Slither/Mythril, on-chain, and write/execute dispatch land in later blocks.
-        return wrap_data(
-            f"[STUB] Tool {at.value!r} not yet implemented.",
-            tool=at.value,
-            path=str(params.get("path", "")),
-        )

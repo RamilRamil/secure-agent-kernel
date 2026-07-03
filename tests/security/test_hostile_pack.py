@@ -97,7 +97,7 @@ def test_H2_packcontext_has_no_memory_handle() -> None:
     ctx_fields = {f.name for f in dataclasses.fields(PackContext)}
     assert "memory" not in ctx_fields
     # the only capabilities a pack gets are these — none can write memory:
-    assert ctx_fields == {"audit_root", "sandbox", "poc_dir", "wrap_data"}
+    assert ctx_fields == {"audit_root", "sandbox", "poc_dir", "wrap_data", "poc_generator"}
 
 
 def test_H2_kernel_persists_findings_as_external_llm_output(tmp_path: Path) -> None:

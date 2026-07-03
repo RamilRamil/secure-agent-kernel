@@ -3,7 +3,7 @@ import json
 import pytest
 from pathlib import Path
 
-from sr_agent.models.finding import BastetTag, Severity
+from sr_agent.packs.audit.finding import BastetTag, Severity
 from sr_agent.packs.audit.tools.smartgraphical import (
     SGFinding,
     SmartGraphicalError,

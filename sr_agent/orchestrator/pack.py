@@ -65,6 +65,10 @@ class PackContext:
     sandbox: "DockerSandbox"
     poc_dir: "Path"
     wrap_data: Callable[..., str]
+    # Optional LLM-backed PoC-body generator (None → deterministic stub). A
+    # capability the kernel provides to the pack's write_execute path; still no
+    # memory handle (a pack cannot forge a tier).
+    poc_generator: "Callable[[str], str] | None" = None
 
 
 @dataclass(frozen=True)

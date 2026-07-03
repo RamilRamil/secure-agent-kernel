@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from sr_agent.memory.episodic import EpisodicMemory
-from sr_agent.models.audit import Principal
+from sr_agent.packs.audit.session import Principal
 from sr_agent.models.chat import ChatSession, ChatTurn, PoCStatusEvent
 from sr_agent.models.memory import SourceType
 from sr_agent.orchestrator.chat_session import (

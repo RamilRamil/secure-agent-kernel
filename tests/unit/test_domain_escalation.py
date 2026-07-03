@@ -6,7 +6,7 @@ guards, then the pack's domain_escalation, preserving order and behavior.
 from __future__ import annotations
 
 from sr_agent.guardrails.escalation import evaluate_triggers
-from sr_agent.models.finding import Finding, FindingStatus, Severity
+from sr_agent.packs.audit.finding import Finding, FindingStatus, Severity
 from sr_agent.packs.audit.escalation import domain_escalation
 
 

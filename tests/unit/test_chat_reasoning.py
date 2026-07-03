@@ -10,7 +10,7 @@ from pathlib import Path
 from sr_agent.guardrails.escalation import EscalationResult
 from sr_agent.llm_core.chat_reasoning import ChatReasoningProvider
 from sr_agent.llm_core.schemas import EscalationTrigger
-from sr_agent.models.audit import AuditInput, AuditSession, Principal
+from sr_agent.packs.audit.session import AuditInput, AuditSession, Principal
 
 _ACTION_JSON = (
     '{"next_action":"complete","tool_params":{},"finding":null,'

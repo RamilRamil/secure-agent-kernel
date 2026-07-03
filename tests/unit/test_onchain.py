@@ -1,7 +1,7 @@
 """On-chain tool tests (T060). No web3, no network — injected fake fetcher."""
 import pytest
 
-from sr_agent.tools.onchain import (
+from sr_agent.packs.audit.tools.onchain import (
     DecompilationResult,
     OnChainError,
     analyze_transactions,

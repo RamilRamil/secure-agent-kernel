@@ -6,7 +6,7 @@ guard is pure logic. Verifies the security-critical anvil-only restriction.
 import pytest
 
 from sr_agent.tools.sandbox import SandboxResult
-from sr_agent.tools.write_execute import (
+from sr_agent.packs.audit.tools.write_execute import (
     DeployResult,
     DeployTargetError,
     deploy_test_contract,

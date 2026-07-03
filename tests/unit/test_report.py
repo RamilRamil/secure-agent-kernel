@@ -1,7 +1,7 @@
 """Audit report generation tests (T062)."""
 import pytest
 
-from sr_agent.models.audit import Stage1Report
+from sr_agent.packs.audit.session import Stage1Report
 from sr_agent.packs.audit.report import generate_report
 
 

@@ -9,9 +9,10 @@ os.environ.setdefault("SR_SECRET_KEY", "00" * 32)
 from sr_agent.llm_core.chat_reasoning import ReasoningOutcome
 from sr_agent.llm_core.schemas import AgentAction, FindingPayload
 from sr_agent.memory.episodic import EpisodicMemory
-from sr_agent.models.audit import AuditInput, AuditSession, Principal
+from sr_agent.packs.audit.session import AuditInput, AuditSession, Principal
 from sr_agent.models.memory import SourceType
 from sr_agent.orchestrator.loop import OrchestratorLoop
+from sr_agent.packs.audit.pack import AUDIT_PACK
 from sr_agent.tools.sandbox import SandboxResult
 
 _KEY = bytes(range(32))
@@ -38,7 +39,7 @@ def _loop(tmp_path, provider):
     )
     loop = OrchestratorLoop(
         audit_session, memory, tmp_path,
-        reasoning_provider=provider,
+        pack=AUDIT_PACK, reasoning_provider=provider,
         confirmations_dir=tmp_path / "conf",
         sandbox=FakeSandbox(), poc_dir=tmp_path / "audit" / "poc",
     )

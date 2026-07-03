@@ -2,7 +2,7 @@
 import pytest
 from pathlib import Path
 
-from sr_agent.planner.sig import (
+from sr_agent.packs.audit.planner.sig import (
     build_sig,
     extract_state_vars,
     get_filtered_pairs,
@@ -81,20 +81,20 @@ def _sg_graph():
 
 
 def test_sg_sig_reads_state_write_edge():
-    from sr_agent.planner.sig import build_sig_from_smartgraphical
+    from sr_agent.packs.audit.planner.sig import build_sig_from_smartgraphical
     sig = build_sig_from_smartgraphical(_sg_graph())
     assert "balances" in sig.functions["_credit"].writes
 
 
 def test_sg_sig_propagates_state_through_call():
-    from sr_agent.planner.sig import build_sig_from_smartgraphical
+    from sr_agent.packs.audit.planner.sig import build_sig_from_smartgraphical
     sig = build_sig_from_smartgraphical(_sg_graph())
     # deposit calls _credit (cross_type_call) -> inherits its write to balances
     assert "balances" in sig.functions["deposit"].writes
 
 
 def test_sg_sig_detects_cross_inheritance_interference():
-    from sr_agent.planner.sig import build_sig_from_smartgraphical
+    from sr_agent.packs.audit.planner.sig import build_sig_from_smartgraphical
     sig = build_sig_from_smartgraphical(_sg_graph())
     # deposit (Vault) and _credit (Base) share balances via the inherited call
     assert sig.interferes("deposit", "_credit")
@@ -103,7 +103,7 @@ def test_sg_sig_detects_cross_inheritance_interference():
 def test_regex_sig_misses_what_sg_catches():
     """Contrast: the single-file regex SIG does NOT link deposit and _credit."""
     from pathlib import Path
-    from sr_agent.planner.sig import build_sig
+    from sr_agent.packs.audit.planner.sig import build_sig
     root = Path(__file__).resolve().parents[2] / "examples" / "inheritance-vault"
     regex_sig = build_sig((root / "Vault.sol").read_text())
     # deposit's body is just `_credit(...)` — no `balances` token, so regex sees

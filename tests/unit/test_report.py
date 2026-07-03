@@ -2,7 +2,7 @@
 import pytest
 
 from sr_agent.models.audit import Stage1Report
-from sr_agent.io.report import generate_report
+from sr_agent.packs.audit.report import generate_report
 
 
 def _f(fid, severity, **kw):

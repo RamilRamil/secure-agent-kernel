@@ -136,28 +136,65 @@ class LocalClient:
                 return candidate
         return cls(model=preferred, host=host)
 
-    def generate(self, prompt: str, fmt: str | None = None) -> str:
+    def generate(
+        self, prompt: str, fmt: str | None = None, options: dict | None = None
+    ) -> str:
         """Single-turn generation. Raises ModelUnavailableError if unreachable.
 
         fmt="json" enables Ollama's grammar-constrained JSON decoding, which
         guarantees syntactically valid JSON (small models otherwise leave inner
         quotes unescaped and break the parser).
+
+        `options` maps to Ollama's generate `options` (e.g. {"num_ctx": 16384}).
+        The num_ctx default is small (2048) — a long prompt (a full audit
+        report, a big source file) is silently truncated unless num_ctx is
+        raised here, so any long-context caller MUST set it.
+
+        Always streams (NDJSON) rather than requesting one final blob: a
+        `stream: false` call sends the client ZERO bytes until generation
+        fully completes, which a proxy/tunnel between the caller and Ollama
+        (e.g. a free `cloudflared` quick tunnel — see docs/roadmap.md gotcha
+        #11) reads as one long idle connection and cuts after ~60-100s,
+        regardless of `timeout_s` here. The cut connection then yields a
+        truncated-but-still-JSON-parseable partial response with `done:
+        false`, which was previously accepted silently as real output
+        (root-caused 2026-07-02 — a PoC draft truncated mid-statement).
+        Streaming keeps bytes flowing continuously, which proxies read as
+        "active", and lets us explicitly detect and reject a cut-short
+        stream (never saw `done: true`) instead of returning garbage.
         """
-        body: dict = {"model": self.model, "prompt": prompt, "stream": False}
+        body: dict = {"model": self.model, "prompt": prompt, "stream": True}
         if fmt:
             body["format"] = fmt
+        if options:
+            body["options"] = options
         payload = json.dumps(body).encode("utf-8")
         req = urllib.request.Request(
             f"{self.host}/api/generate",
             data=payload,
             headers={"Content-Type": "application/json"},
         )
+        chunks: list[str] = []
+        saw_done = False
         try:
             with urllib.request.urlopen(req, timeout=self.timeout_s) as r:
-                data = json.loads(r.read())
+                for raw_line in r:
+                    line = raw_line.strip()
+                    if not line:
+                        continue
+                    obj = json.loads(line)
+                    chunks.append(obj.get("response", ""))
+                    if obj.get("done"):
+                        saw_done = True
+                        break
         except (urllib.error.URLError, OSError, ValueError) as e:
             raise ModelUnavailableError(f"Ollama generate failed: {e}") from e
-        return data.get("response", "")
+        if not saw_done:
+            raise ModelUnavailableError(
+                "Ollama stream ended before done:true — connection was likely "
+                "cut mid-generation by a proxy/tunnel (see roadmap gotcha #11)"
+            )
+        return "".join(chunks)
 
 
 # Built-in fallback — used verbatim if Langfuse is disabled/unreachable, and

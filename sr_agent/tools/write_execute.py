@@ -119,16 +119,31 @@ def run_tests(
     live outside the default `test/` dir (e.g. `audit/poc/`), else forge reports
     "No tests to run". `via_ir` and remappings are inherited from the default
     profile unchanged.
+
+    `ghcr.io/foundry-rs/foundry` has `ENTRYPOINT=["/bin/sh","-c"]` (shell form) —
+    passing the command as an argv list double-wraps under the image's own
+    `sh -c` and the real command is never actually run: `sh -c "sh" "-c" "cmd"`
+    executes the *script text* "sh" with "-c"/"cmd" as its $0/$1, which just
+    reads stdin and exits 0 with no output (see docs/roadmap.md gotcha #3,
+    root-caused 2026-07-02 — a "passed" PoC test that never actually compiled).
+    The fix is to always hand the image a SINGLE command string.
+
+    Always passes `--offline`: this sandbox always runs with `--network none`
+    (Constitution I), so forge WILL fail to reach binaries.soliditylang.org
+    regardless; `--offline` makes it fail cleanly ("solc not installed") using
+    whatever solc is already cached in the image rather than hanging on a DNS
+    timeout (docs/roadmap.md gotcha #6 — `--offline` must NOT be combined with
+    `--use`, a confirmed upstream bug, foundry-rs/foundry#2412 — omit `--use`
+    and let forge auto-detect the pragma-resolved version from the cache).
+    A Foundry image used with this sandbox MUST have its target project's solc
+    version(s) pre-baked (see docker/Dockerfile.foundry) or every run fails.
     """
+    inner = "forge test --offline"
+    if test_path:
+        inner += f" --match-path {test_path}"
     if foundry_test_dir:
-        inner = "forge test"
-        if test_path:
-            inner += f" --match-path {test_path}"
-        command = ["sh", "-c", f"FOUNDRY_TEST={foundry_test_dir} {inner}"]
-    else:
-        command = ["forge", "test"]
-        if test_path:
-            command += ["--match-path", test_path]
+        inner = f"FOUNDRY_TEST={foundry_test_dir} {inner}"
+    command = [inner]
 
     # The project workspace is mounted rw so forge can write build artifacts;
     # isolation comes from --network none + ephemeral container + dropped caps.

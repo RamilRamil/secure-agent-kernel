@@ -82,6 +82,7 @@ class OrchestratorLoop:
         poc_dir: Path | None = None,
         poc_generator: Callable[[str], str] | None = None,
         checkpoint_fn: Callable | None = None,
+        event_sink: Callable[[dict], None] | None = None,
     ) -> None:
         self._session = session
         self._memory = memory
@@ -106,6 +107,10 @@ class OrchestratorLoop:
         # PackContext (least privilege) — never the loop, never memory-write.
         self._pack = pack
         self._checkpoint_fn = checkpoint_fn
+        # Observability only (feature 005, R3): a surface can watch the ReAct
+        # steps live. None-safe; exceptions in the sink NEVER affect the loop —
+        # it cannot change control flow or any invariant.
+        self._event_sink = event_sink
         self._ctx = PackContext(
             audit_root=audit_root, sandbox=self._sandbox,
             poc_dir=self._poc_dir, wrap_data=wrap_data, poc_generator=poc_generator,
@@ -113,6 +118,15 @@ class OrchestratorLoop:
 
         # Verify tool descriptions haven't been tampered with
         verify_all_hashes()
+
+    def _emit(self, type: str, **payload) -> None:
+        """Fire a live-trace event (observability only; never affects the loop)."""
+        if self._event_sink is None:
+            return
+        try:
+            self._event_sink({"type": type, **payload})
+        except Exception:  # a broken observer must never break the loop
+            logger.debug("event_sink raised; ignoring", exc_info=True)
 
     def run(self, system_prompt: str) -> AuditResult:
         """Execute the ReAct loop until completion or resource limit."""
@@ -280,6 +294,11 @@ class OrchestratorLoop:
                 escalation_trigger=outcome.escalation_trigger,
                 escalation_source=outcome.escalation_source,
             )
+            self._emit(
+                "routing", tier=outcome.tier,
+                escalation_trigger=(outcome.escalation_trigger.value if outcome.escalation_trigger else None),
+                escalation_source=outcome.escalation_source,
+            )
 
             if outcome.kind == "blocked_local_unavailable":
                 return TurnResult(
@@ -295,6 +314,11 @@ class OrchestratorLoop:
 
             agent_action = outcome.agent_action
             assert agent_action is not None  # kind == "action" guarantees this
+            self._emit(
+                "reasoning", next_action=agent_action.next_action,
+                tool_params=agent_action.tool_params,
+                reasoning_summary=agent_action.reasoning_summary,
+            )
 
             if agent_action.finding:
                 finding = self._persist_finding(agent_action)
@@ -353,6 +377,10 @@ class OrchestratorLoop:
             detail = action.params.get("path") or action.params.get("pattern") or ""
             tool_summaries.append(f"{action.action_type.value} {detail}".strip())
             tool_calls += 1
+            self._emit(
+                "tool", tool=action.action_type.value, detail=detail,
+                budget_used=tool_calls, budget_limit=MAX_TOOL_CALLS_PER_TURN,
+            )
 
         return TurnResult(
             status="budget_exhausted",

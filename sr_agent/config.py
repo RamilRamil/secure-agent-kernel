@@ -48,7 +48,10 @@ def load_config() -> Config:
     langfuse_public = os.environ.get("LANGFUSE_PUBLIC_KEY", "")
 
     return Config(
-        anthropic_api_key=_require("ANTHROPIC_API_KEY"),
+        # Optional: the core loop runs on local model / relay (Constitution V).
+        # Only the ClaudeClient path (non-chat audit stages) needs this, and it
+        # errors clearly at construction if it's missing.
+        anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY", ""),
         alchemy_api_key=os.environ.get("ALCHEMY_API_KEY", ""),
         tenderly_api_key=os.environ.get("TENDERLY_API_KEY", ""),
         secret_key=bytes.fromhex(_require("SR_SECRET_KEY")),

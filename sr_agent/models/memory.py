@@ -64,6 +64,16 @@ class MemoryRecord(BaseModel):
     checkpoint: dict | None = None       # serialised Checkpoint
     status_change: StatusChange | None = None
 
+    # Generic, capability-pack-extensible content. The kernel stays pack-agnostic:
+    # a pack (or chat mode) persists its own record kinds here rather than adding a
+    # named field per type. `payload_kind` discriminates (e.g. "chat_turn",
+    # "poc_status"). Signed like every other field (fields_for_hmac includes it).
+    # NOTE: adding these fields changes the signed shape — records written by an
+    # older schema will fail verification. Acceptable here (memory is ephemeral);
+    # a real migration would re-sign on read.
+    payload: dict | None = None
+    payload_kind: str | None = None
+
     # Append-only correction chain
     supersedes: str | None = None        # record_id of the record this overrides
 
@@ -76,7 +86,7 @@ class MemoryRecord(BaseModel):
 
     @model_validator(mode="after")
     def _content_present(self) -> MemoryRecord:
-        if not any([self.finding, self.checkpoint, self.status_change]):
+        if not any([self.finding, self.checkpoint, self.status_change, self.payload]):
             raise ValueError("MemoryRecord must have at least one content field set")
         return self
 

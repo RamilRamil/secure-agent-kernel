@@ -1,9 +1,9 @@
 """Stage 3 deterministic synthesis tests (T056)."""
 import pytest
 
-from sr_agent.models.finding import Finding, Severity
-from sr_agent.planner.sig import build_sig
-from sr_agent.planner.stage3 import run_stage3
+from sr_agent.packs.audit.finding import Finding, Severity
+from sr_agent.packs.audit.planner.sig import build_sig
+from sr_agent.packs.audit.planner.stage3 import run_stage3
 
 
 def _f(fid, severity, location="Vault.sol:1", **kw) -> Finding:

@@ -10,7 +10,7 @@ from sr_agent.memory import hmac as hmac_module
 from sr_agent.models.memory import MemoryRecord, REQUIRES_HUMAN_CONFIRMATION, SourceType
 
 if TYPE_CHECKING:
-    from sr_agent.models.audit import Principal
+    from sr_agent.models.principal import Principal
 
 logger = logging.getLogger(__name__)
 

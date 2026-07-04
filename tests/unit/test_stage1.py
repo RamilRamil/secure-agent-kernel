@@ -2,7 +2,7 @@
 import pytest
 from pathlib import Path
 
-from sr_agent.planner.stage1 import (
+from sr_agent.packs.audit.planner.stage1 import (
     extract_functions,
     run_stage1,
     score_function,

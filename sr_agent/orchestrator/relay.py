@@ -28,9 +28,6 @@ from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
 
-from sr_agent.guardrails.sanitize import sanitize
-from sr_agent.models.finding import Finding
-
 logger = logging.getLogger(__name__)
 
 _FENCE_RE = re.compile(r"```(?:json)?\s*\n(.*?)```", re.DOTALL)
@@ -49,23 +46,10 @@ class RelayRequest:
     created_at: str
 
 
-@dataclass
-class RelayFinding:
-    finding: Finding
-    notes: str               # sanitized
-    notes_flags: list[str]   # sanitize flags (homoglyph, zero_width, ...)
-
-
-@dataclass
-class RelayIngestResult:
-    request_id: str
-    findings: list[RelayFinding] = field(default_factory=list)
-    errors: list[str] = field(default_factory=list)
-    needs_resend: bool = False
-
-    @property
-    def ok(self) -> bool:
-        return not self.needs_resend and bool(self.findings)
+# RelayFinding / RelayIngestResult / adapt_findings / ingest_response moved to
+# the audit pack (packs/audit/relay_ingest.py) — turning extracted dicts into
+# domain Findings is audit knowledge. This module keeps only the transport +
+# generic dict extraction (extract_findings).
 
 
 def _request_path(relay_dir: Path, request_id: str) -> Path:
@@ -167,73 +151,6 @@ def extract_findings(raw_text: str) -> list[dict]:
             return [d for d in data if isinstance(d, dict)]
 
     raise RelayAdapterError("no parseable findings block found in response")
-
-
-def adapt_findings(raw_text: str, request_id: str = "") -> RelayIngestResult:
-    """Turn free-form model text into validated findings.
-
-    Shared by the manual relay and any automated provider (e.g. a local Ollama
-    model), so both parse identically: tolerant fenced-JSON extraction, strict
-    Finding validation, sanitized notes, and the structural drop of any
-    status_change (relay/automation != authoring).
-    """
-    result = RelayIngestResult(request_id=request_id)
-
-    try:
-        raw_findings = extract_findings(raw_text)
-    except RelayAdapterError as e:
-        result.needs_resend = True
-        result.errors.append(str(e))
-        return result
-
-    for idx, raw in enumerate(raw_findings):
-        raw = dict(raw)  # copy; do not mutate caller data
-        notes = raw.pop("notes", "") or ""
-        # status_change is not a Finding field — dropped so a model response can
-        # never carry a privileged status into memory.
-        raw.pop("status_change", None)
-        try:
-            finding = Finding(**raw)
-        except Exception as e:
-            result.errors.append(f"finding[{idx}]: {e}")
-            continue
-        clean = sanitize(str(notes))
-        result.findings.append(
-            RelayFinding(finding=finding, notes=clean.normalized, notes_flags=clean.flags)
-        )
-
-    if not result.findings and not result.errors:
-        result.errors.append("response contained zero findings")
-    return result
-
-
-def ingest_response(
-    request_id: str,
-    relay_dir: Path,
-    response_text: str | None = None,
-) -> RelayIngestResult:
-    """Parse and validate a relayed analysis response into findings.
-
-    A missing/unparseable response yields needs_resend=True (fail-safe), not an
-    exception. Per-entry validation errors are collected; valid findings still
-    pass through.
-    """
-    if response_text is None:
-        path = _response_path(relay_dir, request_id)
-        if not path.exists():
-            result = RelayIngestResult(request_id=request_id)
-            result.needs_resend = True
-            result.errors.append("no response file found")
-            return result
-        response_text = path.read_text(encoding="utf-8")
-
-    result = adapt_findings(response_text, request_id=request_id)
-    logger.info(
-        "Relay ingest %s: %d valid, %d errors%s",
-        request_id, len(result.findings), len(result.errors),
-        " (needs_resend)" if result.needs_resend else "",
-    )
-    return result
 
 
 def read_request(request_id: str, relay_dir: Path) -> str:

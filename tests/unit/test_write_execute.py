@@ -6,7 +6,7 @@ guard is pure logic. Verifies the security-critical anvil-only restriction.
 import pytest
 
 from sr_agent.tools.sandbox import SandboxResult
-from sr_agent.tools.write_execute import (
+from sr_agent.packs.audit.tools.write_execute import (
     DeployResult,
     DeployTargetError,
     deploy_test_contract,
@@ -54,7 +54,10 @@ def test_run_tests_invokes_sandbox(tmp_path):
     fake = _FakeSandbox(SandboxResult(exit_code=0, stdout="PASS", stderr=""))
     res = run_tests(tmp_path, fake, test_path="PoC.t.sol")
     assert res.passed
-    assert fake.calls[0]["command"] == ["forge", "test", "--match-path", "PoC.t.sol"]
+    # Single command STRING (not an argv list) so the foundry image's shell-form
+    # ENTRYPOINT runs it directly; always --offline (network-isolated sandbox).
+    # See write_execute.py::run_tests and docs/roadmap.md gotchas #3/#6.
+    assert fake.calls[0]["command"] == ["forge test --offline --match-path PoC.t.sol"]
     assert fake.calls[0]["workdir"] == "/work"
 
 

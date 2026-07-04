@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from sr_agent.models.audit import AuditSession
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from sr_agent.models.session import Session
 
 # Per-model context window limits (in tokens).
 # Stage 2 (Qwen3-4B) gets one function at a time — its 32K window is sufficient.
@@ -36,10 +39,11 @@ def _estimate_tokens(text: str) -> int:
 
 
 def build_messages(
-    session: AuditSession,
+    session: "Session",
     system_prompt: str,
     tool_output: str | None = None,
     knowledge_chunks: list[str] | None = None,
+    session_facts: str | None = None,
     model: str = "claude-opus-4-8",
 ) -> list[dict]:
     """Assemble the messages list for an LLM call.
@@ -47,10 +51,23 @@ def build_messages(
     Priority order for truncation (lowest priority dropped first):
     1. knowledge_chunks (background context)
     2. older tool outputs
-    3. system_prompt is never truncated
+    3. session_facts (chat grounding, R6) — highest priority, dropped last
+    4. system_prompt is never truncated
+
+    ``session_facts`` (chat mode) is orchestrator-authored grounding — the bound
+    project, known finding ids, recent tool summaries — DATA-wrapped like every
+    other external input and included on every turn so a long session stays
+    consistent about its own scope even past the local model's window.
     """
     limit = CONTEXT_LIMITS.get(model, 28_000)
     messages: list[dict] = []
+
+    # Session facts — chat grounding, highest priority (included every turn).
+    if session_facts:
+        messages.append({
+            "role": "user",
+            "content": wrap_data(session_facts, tool="session_facts", path="grounding"),
+        })
 
     # Knowledge chunks — background context, lowest priority
     if knowledge_chunks:

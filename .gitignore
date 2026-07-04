@@ -6,8 +6,8 @@ session-summary.md
 # /memory/ = top-level only; sr_agent/memory/ is source code and IS tracked
 /memory/
 
-# Fine-tuning artifacts (large files, dataset-specific)
-data/finetune/
+# Fine-tuning artifacts (large files, dataset-specific) — keep README tracked
+data/finetune/*.jsonl
 adapters/
 
 # Python

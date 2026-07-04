@@ -37,6 +37,11 @@ Rules:
 
 class ClaudeClient:
     def __init__(self, model: str | None = None) -> None:
+        if not config.anthropic_api_key:
+            raise EnvironmentError(
+                "ANTHROPIC_API_KEY is not set. The core loop (chat, local Stage 2, "
+                "relay) does not need it — only this paid ClaudeClient path does."
+            )
         self._client = anthropic.Anthropic(api_key=config.anthropic_api_key)
         self._model = model or config.stage1_model
 

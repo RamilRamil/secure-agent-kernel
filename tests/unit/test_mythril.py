@@ -4,7 +4,7 @@ import pytest
 from pathlib import Path
 
 from sr_agent.tools.sandbox import SandboxResult
-from sr_agent.tools.static_analysis import (
+from sr_agent.packs.audit.tools.static_analysis import (
     MythrilError,
     parse_mythril_json,
     run_mythril,

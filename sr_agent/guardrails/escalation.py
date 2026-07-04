@@ -1,13 +1,25 @@
+"""Deterministic escalation triggers — kernel guards (feature 004, R5).
+
+The kernel owns the three domain-INDEPENDENT triggers — irreversible action,
+unauthorized memory status-change, resource limit — which hold for ANY pack. The
+five finding-based triggers moved to the audit pack (`packs/audit/escalation.py`)
+and are supplied via the `domain_escalation` callback: the kernel runs the
+generic guards, then the pack's domain check, then the resource guard; first
+match wins. `finding` is opaque to the kernel (passed through to the pack); the
+kernel never inspects it, so it imports no finding model.
+"""
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from typing import TYPE_CHECKING, Callable
 
 from sr_agent.llm_core.schemas import EscalationTrigger
 from sr_agent.models.action import Action, ActionClass
-from sr_agent.models.audit import AuditSession
-from sr_agent.models.finding import Finding, Severity
 from sr_agent.models.memory import MemoryRecord, SourceType
+
+if TYPE_CHECKING:
+    from sr_agent.models.session import Session
 
 logger = logging.getLogger(__name__)
 
@@ -25,95 +37,47 @@ class EscalationResult:
 def evaluate_triggers(
     action: Action | None,
     record: MemoryRecord | None,
-    finding: Finding | None,
-    session: AuditSession,
-    existing_findings: list[Finding] | None = None,
+    finding: object | None = None,
+    session: "Session | None" = None,
+    existing_findings: list | None = None,
+    domain_escalation: Callable[..., "EscalationResult | None"] | None = None,
 ) -> EscalationResult:
-    """Evaluate all 8 escalation triggers. Returns first match, or no-trigger.
+    """Evaluate the deterministic escalation triggers. Returns first match.
 
     All checks are deterministic — no LLM calls. The LLM may also set
-    escalation_trigger in AgentAction, but these checks are independent
-    and cannot be suppressed by injected context.
+    escalation_trigger in AgentAction, but these checks are independent and
+    cannot be suppressed by injected context. Order is preserved: generic
+    triggers #1/#2, then the pack's finding-based triggers (#3–#7) via
+    `domain_escalation`, then the generic resource trigger #8.
     """
-
     # 1. Irreversible action requested
-    if action and action.action_class == ActionClass.write_execute:
-        if not action.is_reversible:
-            return EscalationResult(
-                triggered=True,
-                trigger=EscalationTrigger.irreversible_action,
-                detail=f"Action '{action.action_type.value}' is irreversible",
-            )
-
-    # 2. Memory status change (any status_change record from non-human source)
-    if record and record.status_change:
-        if record.source_type != SourceType.human_input:
-            return EscalationResult(
-                triggered=True,
-                trigger=EscalationTrigger.memory_status_change,
-                detail=(
-                    f"Status change '{record.status_change.new_status}' "
-                    f"from source_type={record.source_type.value} — requires human review"
-                ),
-            )
-
-    # 3. Critical finding
-    if finding and finding.severity == Severity.critical:
+    if action and action.action_class == ActionClass.write_execute and not action.is_reversible:
+        _at = getattr(action.action_type, "value", action.action_type)
         return EscalationResult(
             triggered=True,
-            trigger=EscalationTrigger.critical_finding,
-            detail=f"Critical severity finding at {finding.location}",
+            trigger=EscalationTrigger.irreversible_action,
+            detail=f"Action '{_at}' is irreversible",
         )
 
-    # 4. Unverified high severity
-    if finding and finding.severity == Severity.high:
-        from sr_agent.models.finding import FindingStatus
-        if finding.status == FindingStatus.unverified:
-            return EscalationResult(
-                triggered=True,
-                trigger=EscalationTrigger.unverified_high,
-                detail=f"Unverified high-severity finding {finding.finding_id} at {finding.location}",
-            )
-
-    # 5. Mock test detected (PoC uses mock patterns — checked separately in mock_detect.py)
-    if finding and finding.poc_status:
-        from sr_agent.models.finding import PoCStatus
-        if finding.poc_status == PoCStatus.mock_review:
-            return EscalationResult(
-                triggered=True,
-                trigger=EscalationTrigger.mock_test,
-                detail=f"PoC for {finding.finding_id} uses mock patterns — human review required",
-            )
-
-    # 6. Contradicting findings — same location, conflicting severity/status
-    if finding and existing_findings:
-        for existing in existing_findings:
-            if existing.location == finding.location and existing.function_name == finding.function_name:
-                existing_rank = _severity_rank(existing.severity)
-                new_rank = _severity_rank(finding.severity)
-                if abs(existing_rank - new_rank) >= 2:
-                    return EscalationResult(
-                        triggered=True,
-                        trigger=EscalationTrigger.contradicting_findings,
-                        detail=(
-                            f"Contradicting severity at {finding.location}: "
-                            f"existing={existing.severity.value}, new={finding.severity.value}"
-                        ),
-                    )
-
-    # 7. Unknown pattern — bastet_tag is None on a non-informational finding
-    if finding and finding.bastet_tag is None and finding.severity not in (
-        Severity.informational, Severity.low
-    ):
+    # 2. Memory status change from a non-human source
+    if record and record.status_change and record.source_type != SourceType.human_input:
         return EscalationResult(
             triggered=True,
-            trigger=EscalationTrigger.unknown_pattern,
-            detail=f"No Bastet tag on {finding.severity.value} finding {finding.finding_id}",
+            trigger=EscalationTrigger.memory_status_change,
+            detail=(
+                f"Status change '{record.status_change.new_status}' "
+                f"from source_type={record.source_type.value} — requires human review"
+            ),
         )
+
+    # 3–7. Domain (pack) finding-based triggers — opaque to the kernel.
+    if domain_escalation is not None:
+        result = domain_escalation(finding=finding, existing_findings=existing_findings)
+        if result is not None and result.triggered:
+            return result
 
     # 8. Resource limit approaching
-    if session.token_budget_used > 0:
-        # Rough estimate: MAX_ITERATIONS * avg_tokens_per_iter
+    if session is not None and session.token_budget_used > 0:
         budget_estimate = session.iterations * 8000
         if budget_estimate > 0:
             utilization = session.token_budget_used / budget_estimate
@@ -125,7 +89,3 @@ def evaluate_triggers(
                 )
 
     return EscalationResult(triggered=False)
-
-
-def _severity_rank(s: Severity) -> int:
-    return {"informational": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}[s.value]

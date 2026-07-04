@@ -3,9 +3,9 @@ import json
 import pytest
 from pathlib import Path
 
-from sr_agent.models.finding import BastetTag, Severity
+from sr_agent.packs.audit.finding import BastetTag, Severity
 from sr_agent.tools.sandbox import SandboxResult
-from sr_agent.tools.static_analysis import (
+from sr_agent.packs.audit.tools.static_analysis import (
     SlitherError,
     parse_slither_json,
     run_slither,

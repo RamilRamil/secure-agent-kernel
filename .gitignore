@@ -53,3 +53,7 @@ cache/
 # macOS
 .DS_Store
 /relay/
+
+# target-specific PoC artifacts must never enter the agent repo
+scripts/poc_queue.json
+**/_extracted_tasks.json

@@ -112,6 +112,26 @@ def test_shared_modifier_no_collision(fixture_project):
     assert cancel_impl.name != finalize_impl.name  # distinct symbols, not merged/dropped
 
 
+def test_functions_in_file_matches_visibility(fixture_project):
+    """Feature 007 T020: replatforms poc_queue_runner.py's callable_api regex scan
+    onto the AST index — external/public functions must be distinguishable by real
+    grammar, not a hand-rolled keyword regex."""
+    idx = SymbolIndex.build(fixture_project)
+    funcs = idx.functions_in_file(fixture_project / "Cooldown.sol")
+    names = {f.name: f for f in funcs}
+    assert names["cancel"].visibility == "external"
+    assert names["cancel"].modifiers == ("onlyUser(user)",)
+    assert names["balanceOf"].visibility == "external"
+
+
+def test_top_level_symbols_gives_real_name_file_pairs(fixture_project):
+    """Feature 007 T020: replatforms poc_queue_runner.py's file-map (previously
+    `p.stem`, which silently assumes the filename matches the contract name)."""
+    idx = SymbolIndex.build(fixture_project)
+    names = {s.name for s in idx.top_level_symbols()}
+    assert {"ICooldown", "Foo"} <= names
+
+
 def test_unparseable_file_degrades_gracefully(tmp_path):
     (tmp_path / "Cooldown.sol").write_text(FIXTURE_SRC, encoding="utf-8")
     (tmp_path / "Broken.sol").write_text(BROKEN_SRC, encoding="utf-8")

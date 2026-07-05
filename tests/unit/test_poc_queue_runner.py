@@ -227,6 +227,44 @@ def test_raw_function_tag_stripped_even_if_never_resolved(lookup_fixture_project
     assert "some prose" in result and "more text" in result
 
 
+def test_tool_call_wrapper_leaked_as_text_is_parsed(lookup_fixture_project):
+    """Live H-01 run (2026-07-06): the SAME model, a DIFFERENT raw-text leak
+    format — the generic Hermes/Qwen <tool_call>{...}</tool_call> wrapper,
+    distinct from <function=name> (2026-07-05's finding). Both are real,
+    recurring shapes this build falls back to; both must be parsed as real
+    lookup requests, not written to the PoC file."""
+    idx = SymbolIndex.build(lookup_fixture_project)
+    logged = []
+    tool_client = _FakeToolClient([
+        {"role": "assistant",
+         "content": '<tool_call>{"name": "lookup_symbol", "arguments": {"name": "TBalanceState"}}</tool_call>',
+         "tool_calls": []},
+        {"role": "assistant", "content": "final clean source", "tool_calls": []},
+    ])
+    result = pqr._generate_with_tool_calls(
+        tool_client, "BASE", {}, idx, budget=3,
+        on_lookup=lambda name, resolved, n: logged.append((name, resolved, n)),
+    )
+    assert logged == [("TBalanceState", True, 1)]
+    assert result == "final clean source"
+
+
+def test_orphan_tool_call_marker_stripped(lookup_fixture_project):
+    """Live H-01 run (2026-07-06): a bare `</tool_call>` leaked as line 1 of
+    the final answer with NO matching opening tag anywhere in that turn's
+    content (the model's earlier turns had already made real structured tool
+    calls; only this stray closing marker leaked into the code-writing turn).
+    Must be stripped even though there's nothing to parse as a call."""
+    idx = SymbolIndex.build(lookup_fixture_project)
+    tool_client = _FakeToolClient([
+        {"role": "assistant", "content": "</tool_call>\npragma solidity ^0.8.28;\ncontract X {}",
+         "tool_calls": []},
+    ])
+    result = pqr._generate_with_tool_calls(tool_client, "BASE", {}, idx, budget=3, on_lookup=None)
+    assert "tool_call" not in result
+    assert "pragma solidity" in result
+
+
 # ── Feature 008: protocol selection (contracts/protocol-selection.md) ──────
 
 class _StubClient:

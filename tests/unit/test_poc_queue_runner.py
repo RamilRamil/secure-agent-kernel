@@ -296,3 +296,47 @@ def test_forced_marker_protocol_on_capable_model():
 
 def test_forced_tool_protocol_on_capable_model():
     assert pqr._select_protocol("tool", _StubClient(True)) == ("tool", "forced")
+
+
+# ── mechanism_signal: description as a candidate source, not just location ──
+
+def test_mechanism_signal_falls_back_to_description_when_location_is_bare():
+    """Live H-01 run (2026-07-06): extraction is non-deterministic — location
+    degraded to a bare filename ("Foo.sol", no method names) on one
+    run even though the SAME finding's description names the real mechanism
+    (`coverage()`, `cancel()`) in markdown code spans. A PoC that reached a
+    real fork PASS with zero structural defects while testing something
+    entirely unrelated (a generic "revert on zero shares" sanity check) went
+    undetected because mechanism_signal only checked location, which was
+    blind this run. checked/called must reflect the description's real
+    mechanism, not silently return empty."""
+    vacuous_but_structurally_clean_code = """
+    contract PoC_H_01 is Base {
+        function testRevertWhenRequestRedeemWithZeroShares() public {
+            vm.expectRevert();
+            IFoo(x).requestRedeem(a, b, c, d, 0, 0, 0);
+        }
+    }
+    """
+    description = (
+        "A redeemer can lock fee-free padding shares into the silo to shift "
+        "`coverage()` into the least-restrictive tier before their real "
+        "redemption in the same block, then reclaim the padding via "
+        "`cancel()`, which has no minimum-dwell or forfeit check."
+    )
+    result = pqr.mechanism_signal(vacuous_but_structurally_clean_code, "Foo.sol", description)
+    assert result["checked"] == ["coverage", "cancel"]
+    assert result["called"] == []
+
+
+def test_mechanism_signal_description_extraction_is_precise_not_noisy():
+    """Backtick-quoted method references in prose (`coverage()`) must be
+    extracted precisely — not diluted by ordinary English words in the same
+    sentence (before/which/meant/enforce/...), which would drown the
+    diagnostic signal in noise even though it's already diagnostic-only."""
+    description = (
+        "This bypasses the cooldown lock that tier is meant to enforce via "
+        "`cancel()`."
+    )
+    result = pqr.mechanism_signal("contract X {}", "", description)
+    assert result["checked"] == ["cancel"]

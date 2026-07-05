@@ -127,3 +127,59 @@ def test_for_stage2_prefers_7b_over_3b(monkeypatch):
         lambda self: self.model in ("qwen2.5-coder:7b", "qwen2.5-coder:3b"),
     )
     assert _lc.LocalClient.for_stage2().model == "qwen2.5-coder:7b"
+
+
+class _StreamResp:
+    """Simulates a streamed NDJSON /api/generate response."""
+    def __init__(self, lines):
+        self._lines = lines
+
+    def __iter__(self):
+        return iter(self._lines)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def test_warm_retries_after_a_cut_connection(monkeypatch):
+    """The recurring incident (2026-07-06): a cold model's first warm() call gets
+    cut by a cloudflared tunnel's idle-connection timeout mid-load (the server keeps
+    loading regardless), so an immediate retry succeeds. warm() must retry itself
+    rather than require the operator to notice and rerun by hand."""
+    calls = {"n": 0}
+
+    def _flaky_open(req, timeout=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise TimeoutError("tunnel cut the idle connection")
+        return _StreamResp([b'{"response": "", "done": false}\n', b'{"response": "k", "done": true}\n'])
+
+    monkeypatch.setattr(_lc.urllib.request, "urlopen", _flaky_open)
+    assert _lc.LocalClient(model="qwen3-coder:30b").warm(retries=2) is True
+    assert calls["n"] == 2  # failed once, succeeded on the immediate retry
+
+
+def test_warm_uses_streaming_not_stream_false(monkeypatch):
+    """warm() must request stream:true (matches generate()'s already-fixed pattern
+    for the same tunnel-idle-timeout gotcha, docs/roadmap.md #11) — a stream:false
+    request sends zero bytes until the (cold-load-inclusive) response completes."""
+    captured = {}
+
+    def _capture_open(req, timeout=None):
+        captured["body"] = _json.loads(req.data)
+        return _StreamResp([b'{"response": "k", "done": true}\n'])
+
+    monkeypatch.setattr(_lc.urllib.request, "urlopen", _capture_open)
+    _lc.LocalClient(model="qwen3-coder:30b").warm()
+    assert captured["body"]["stream"] is True
+
+
+def test_warm_exhausts_retries_and_reports_failure(monkeypatch):
+    monkeypatch.setattr(
+        _lc.urllib.request, "urlopen",
+        lambda req, timeout=None: (_ for _ in ()).throw(TimeoutError("always cut")),
+    )
+    assert _lc.LocalClient(model="qwen3-coder:30b").warm(retries=1) is False

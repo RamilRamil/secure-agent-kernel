@@ -62,16 +62,31 @@ class LocalClient:
             return self.model in names
         return any(n == self.model or n.startswith(self.model + ":") for n in names)
 
-    def warm(self, timeout_s: float = 1200.0, keep_alive: str = "30m") -> bool:
+    def warm(self, timeout_s: float = 1200.0, keep_alive: str = "30m", retries: int = 2) -> bool:
         """Load the model into memory and keep it resident.
 
-        Cold load of a larger model can take minutes — far longer than ready()'s
-        short probe. Call once at session start so the first real turn's readiness
-        check doesn't fail on the load. keep_alive holds it in memory across the
-        session's turns.
+        Cold load of a larger model (over a cloud-GPU tunnel, e.g. Kaggle +
+        cloudflared) can take minutes — far longer than ready()'s short probe. Call
+        once at session start so the first real turn's readiness check doesn't fail
+        on the load. keep_alive holds it in memory across the session's turns.
+
+        Two defenses against a free `cloudflared` quick tunnel's ~60-100s
+        idle-connection cutoff (docs/roadmap.md gotcha #11), confirmed to actually
+        recur here (2026-07-06): the FIRST warm() call against a cold model reports
+        "could not warm" while the model load is still genuinely in progress
+        server-side; an immediate retry then succeeds near-instantly because the
+        model finished loading despite the tunnel having already cut the client's
+        view of the first call.
+        1. Stream the request (matches `generate()`'s already-fixed pattern) so any
+           bytes Ollama does emit keep the tunnel connection looking active, instead
+           of the single `stream: false` blocking read that sends nothing at all
+           until the whole (cold-load-inclusive) response is ready.
+        2. Retry on failure — a cut connection does not mean the load failed; it
+           means we lost visibility into it. Retrying is the actual fix that's been
+           reliably observed to work, not just a mitigation.
         """
         body = {
-            "model": self.model, "prompt": "ok", "stream": False,
+            "model": self.model, "prompt": "ok", "stream": True,
             "options": {"num_predict": 1}, "keep_alive": keep_alive,
         }
         req = urllib.request.Request(
@@ -79,12 +94,24 @@ class LocalClient:
             data=json.dumps(body).encode("utf-8"),
             headers={"Content-Type": "application/json"},
         )
-        try:
-            with urllib.request.urlopen(req, timeout=timeout_s) as r:
-                data = json.loads(r.read())
-        except Exception:
-            return False
-        return isinstance(data.get("response"), str)
+        for attempt in range(retries + 1):
+            saw_done = False
+            try:
+                with urllib.request.urlopen(req, timeout=timeout_s) as r:
+                    for raw_line in r:
+                        line = raw_line.strip()
+                        if not line:
+                            continue
+                        obj = json.loads(line)
+                        if obj.get("done"):
+                            saw_done = True
+            except Exception:
+                logger.debug("LocalClient.warm attempt %d/%d failed for %s",
+                            attempt + 1, retries + 1, self.model)
+                continue
+            if saw_done:
+                return True
+        return False
 
     def ready(self, probe_timeout_s: float = 15.0) -> bool:
         """Readiness: the model can actually produce output right now.

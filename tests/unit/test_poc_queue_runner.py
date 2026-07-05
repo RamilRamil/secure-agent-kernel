@@ -189,6 +189,44 @@ def test_tool_call_missing_name_argument_is_unresolved(lookup_fixture_project):
     assert result == "final"
 
 
+def test_raw_function_tag_leaked_as_text_is_parsed_not_written(lookup_fixture_project):
+    """Live H-01 run (2026-07-05): qwen3-coder:30b's first attempt wrote
+    `<function=lookup_symbol>` as literal content instead of populating Ollama's
+    structured tool_calls field, and it leaked into the PoC file as line 1,
+    breaking compilation. The round-trip must parse this as a real lookup
+    request instead of returning it as final source."""
+    idx = SymbolIndex.build(lookup_fixture_project)
+    logged = []
+    tool_client = _FakeToolClient([
+        {"role": "assistant",
+         "content": '<function=lookup_symbol>{"name": "TBalanceState"}</function>',
+         "tool_calls": []},
+        {"role": "assistant", "content": "final clean source", "tool_calls": []},
+    ])
+    result = pqr._generate_with_tool_calls(
+        tool_client, "BASE", {}, idx, budget=3,
+        on_lookup=lambda name, resolved, n: logged.append((name, resolved, n)),
+    )
+    assert logged == [("TBalanceState", True, 1)]
+    assert result == "final clean source"
+    assert "<function=" not in result
+
+
+def test_raw_function_tag_stripped_even_if_never_resolved(lookup_fixture_project):
+    """If a raw <function=...> fragment appears on the FINAL turn (budget
+    already exhausted, or unparseable), it must still never reach the returned
+    source — FR-007."""
+    idx = SymbolIndex.build(lookup_fixture_project)
+    tool_client = _FakeToolClient([
+        {"role": "assistant",
+         "content": 'some prose <function=lookup_symbol>garbage</function> more text',
+         "tool_calls": []},
+    ])
+    result = pqr._generate_with_tool_calls(tool_client, "BASE", {}, idx, budget=0, on_lookup=None)
+    assert "<function=" not in result
+    assert "some prose" in result and "more text" in result
+
+
 # ── Feature 008: protocol selection (contracts/protocol-selection.md) ──────
 
 class _StubClient:

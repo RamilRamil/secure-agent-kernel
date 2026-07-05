@@ -340,3 +340,40 @@ def test_mechanism_signal_description_extraction_is_precise_not_noisy():
     )
     result = pqr.mechanism_signal("contract X {}", "", description)
     assert result["checked"] == ["cancel"]
+
+
+# ── scaffold_missing_types: the scaffold structurally can't deploy a target ──
+
+def test_scaffold_missing_types_flags_undeclared_contract():
+    """Live H-01 finding (2026-07-06): the auto-discovered scaffold deployed
+    ERC20Foo but declared no Foo at all — no attempt could
+    ever succeed regardless of grounding quality, and this cost several live
+    attempts to notice by hand. A scaffold mentioning the name elsewhere
+    (import, comment) must not count as providing it — only a real state
+    variable declaration of that type does."""
+    scaffold = """
+    import { Foo } from "./Foo.sol";
+    contract Base {
+        ERC20Foo internal erc20Cooldown;
+        // Foo is mentioned here but never declared as a state var
+    }
+    """
+    assert pqr.scaffold_missing_types(scaffold, ["Foo"]) == ["Foo"]
+
+
+def test_scaffold_missing_types_empty_when_declared():
+    scaffold = "contract Base { Foo internal sharesCooldown; }"
+    assert pqr.scaffold_missing_types(scaffold, ["Foo"]) == []
+
+
+def test_scaffold_missing_types_against_real_scaffolds():
+    """Non-synthetic sanity check against this session's actual target
+    project, if present on this machine — skipped elsewhere."""
+    bad = Path("/Users/ramilmustafin/Projects/Contests/2026-06-foo-bb/contracts/"
+               "test/PoC/Guardian/FooProtocolDeploymentBase.sol")
+    good = Path("/Users/ramilmustafin/Projects/Contests/2026-06-foo-bb/contracts/"
+                "audit/proof-of-code-composer/base/ReviewerFooBase.sol")
+    if not bad.is_file() or not good.is_file():
+        pytest.skip("external target project not present on this machine")
+    assert pqr.scaffold_missing_types(bad.read_text(), ["Foo"]) == ["Foo"]
+    assert pqr.scaffold_missing_types(good.read_text(), ["Foo"]) == []

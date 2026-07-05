@@ -81,8 +81,14 @@ class DockerSandbox:
         timeout_s: float | None = None,
         network: str = "none",
         workdir: str | None = None,
+        env: dict[str, str] | None = None,
     ) -> SandboxResult:
-        """Run a command in an ephemeral, network-isolated container."""
+        """Run a command in an ephemeral, network-isolated container.
+
+        `network` and `env` default to full isolation / no env — the secure agent
+        never relaxes them. They exist only for opt-in tooling (e.g. a mainnet-fork
+        PoC run in the standalone workability harness), which must pass them explicitly.
+        `env` values are injected via `-e` and are NOT logged."""
         self._ensure_available()
         timeout_s = timeout_s if timeout_s is not None else self.default_timeout_s
         container_name = f"sr-sandbox-{uuid.uuid4().hex[:12]}"
@@ -101,6 +107,8 @@ class DockerSandbox:
             argv += ["--security-opt", opt]
         for mount in mounts or []:
             argv += ["-v", mount.to_arg()]
+        for key, value in (env or {}).items():
+            argv += ["-e", f"{key}={value}"]   # value not logged (may be a secret RPC URL)
         if workdir:
             argv += ["-w", workdir]
         argv.append(image)

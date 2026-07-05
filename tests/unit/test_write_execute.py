@@ -43,9 +43,10 @@ class _FakeSandbox:
         self._result = result
         self.calls: list[dict] = []
 
-    def run(self, image, command, mounts=None, timeout_s=None, network="none", workdir=None):
+    def run(self, image, command, mounts=None, timeout_s=None, network="none", workdir=None, env=None):
         self.calls.append(
-            {"image": image, "command": command, "mounts": mounts, "workdir": workdir}
+            {"image": image, "command": command, "mounts": mounts, "workdir": workdir,
+             "network": network, "env": env}
         )
         return self._result
 

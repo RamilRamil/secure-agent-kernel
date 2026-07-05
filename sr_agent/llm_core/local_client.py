@@ -42,6 +42,20 @@ class LocalClient:
     # fast (research R10/R11).
     timeout_s: float = 600.0
 
+    def _matched_tags_entries(self, tags: dict) -> list[dict]:
+        """`/api/tags` entries matching `self.model`, by the same tag rule
+        `available()` has always used: an explicit tag matches exactly
+        (`qwen2.5-coder:3b` must NOT match `qwen2.5-coder:7b`); an untagged name
+        matches any tag of that base. Shared so `supports_tools()` (spec 008)
+        reads `capabilities` off the SAME matched entries `available()` checks
+        for existence, rather than a second, possibly-drifting implementation of
+        this matching rule."""
+        models = tags.get("models", [])
+        if ":" in self.model:
+            return [m for m in models if m.get("name", "") == self.model]
+        return [m for m in models
+                if m.get("name", "") == self.model or m.get("name", "").startswith(self.model + ":")]
+
     def available(self) -> bool:
         """Liveness: the Ollama server is up and the model is pulled.
 
@@ -54,13 +68,20 @@ class LocalClient:
                 tags = json.loads(r.read())
         except Exception:
             return False
-        names = {m.get("name", "") for m in tags.get("models", [])}
-        # An explicit tag must match exactly — `qwen2.5-coder:3b` being pulled must
-        # NOT report `qwen2.5-coder:7b` as available. Only an un-tagged name matches
-        # any tag of that base.
-        if ":" in self.model:
-            return self.model in names
-        return any(n == self.model or n.startswith(self.model + ":") for n in names)
+        return bool(self._matched_tags_entries(tags))
+
+    def supports_tools(self) -> bool:
+        """Whether this model reports native tool-calling support (spec 008
+        research.md R2) — i.e. `"tools"` appears in its `/api/tags` entry's
+        `capabilities` list. Verified present for `qwen2.5-coder:7b`/`:3b`
+        (local) and `qwen3-coder:30b` (Kaggle-hosted, the model actually used
+        for this project's live PoC-drafting runs)."""
+        try:
+            with urllib.request.urlopen(f"{self.host}/api/tags", timeout=5) as r:
+                tags = json.loads(r.read())
+        except Exception:
+            return False
+        return any("tools" in m.get("capabilities", []) for m in self._matched_tags_entries(tags))
 
     def warm(self, timeout_s: float = 1200.0, keep_alive: str = "30m", retries: int = 2) -> bool:
         """Load the model into memory and keep it resident.
@@ -220,5 +241,59 @@ class LocalClient:
                 "cut mid-generation by a proxy/tunnel (see roadmap gotcha #11)"
             )
         return "".join(chunks)
+
+    def chat(self, messages: list[dict], tools: list[dict] | None = None,
+              options: dict | None = None) -> dict:
+        """Single tool-calling-capable turn via Ollama's native `/api/chat`
+        (spec 008 research.md R3/R5) — the transport for the agentic
+        `lookup_symbol` round-trip, parallel to `generate()`'s `/api/generate`.
+
+        Streams for the identical reason `generate()` does (roadmap gotcha
+        #11/#12): a `stream: false` call sends zero bytes until the whole
+        response — including a tool-calling turn — completes, which a tunnel
+        reads as an idle connection and cuts. `tool_calls` typically arrives
+        whole in the chunk that also carries `done: true`, not incrementally,
+        so the last non-empty `tool_calls` seen wins.
+
+        Returns the assembled final message: `{"role": "assistant", "content":
+        str, "tool_calls": list[dict]}` (`tool_calls` empty when the model
+        didn't call a tool this turn).
+        """
+        body: dict = {"model": self.model, "messages": messages, "stream": True}
+        if tools:
+            body["tools"] = tools
+        if options:
+            body["options"] = options
+        payload = json.dumps(body).encode("utf-8")
+        req = urllib.request.Request(
+            f"{self.host}/api/chat",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+        )
+        chunks: list[str] = []
+        tool_calls: list[dict] = []
+        saw_done = False
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout_s) as r:
+                for raw_line in r:
+                    line = raw_line.strip()
+                    if not line:
+                        continue
+                    obj = json.loads(line)
+                    msg = obj.get("message") or {}
+                    chunks.append(msg.get("content", ""))
+                    if msg.get("tool_calls"):
+                        tool_calls = msg["tool_calls"]
+                    if obj.get("done"):
+                        saw_done = True
+                        break
+        except (urllib.error.URLError, OSError, ValueError) as e:
+            raise ModelUnavailableError(f"Ollama chat failed: {e}") from e
+        if not saw_done:
+            raise ModelUnavailableError(
+                "Ollama chat stream ended before done:true — connection was "
+                "likely cut mid-generation by a proxy/tunnel (see roadmap gotcha #11)"
+            )
+        return {"role": "assistant", "content": "".join(chunks), "tool_calls": tool_calls}
 
 

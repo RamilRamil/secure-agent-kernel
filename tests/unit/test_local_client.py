@@ -183,3 +183,78 @@ def test_warm_exhausts_retries_and_reports_failure(monkeypatch):
         lambda req, timeout=None: (_ for _ in ()).throw(TimeoutError("always cut")),
     )
     assert _lc.LocalClient(model="qwen3-coder:30b").warm(retries=1) is False
+
+
+# ── supports_tools() + chat() (feature 008 T005/T006: native tool-calling) ──
+
+
+class _CapsTagsResp:
+    """Unlike _fake_urlopen(models) above (plain names, no capabilities), tests
+    here need the actual /api/tags `capabilities` field supports_tools() reads."""
+    def __init__(self, entries):
+        self._b = _json.dumps({"models": entries}).encode()
+
+    def read(self):
+        return self._b
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def _fake_urlopen_caps(entries):
+    def _open(url, timeout=5):
+        return _CapsTagsResp(entries)
+    return _open
+
+
+def test_supports_tools_true_for_capable_model(monkeypatch):
+    monkeypatch.setattr(_lc.urllib.request, "urlopen", _fake_urlopen_caps(
+        [{"name": "qwen3-coder:30b", "capabilities": ["completion", "tools"]}]))
+    assert _lc.LocalClient(model="qwen3-coder:30b").supports_tools() is True
+
+
+def test_supports_tools_false_when_capability_absent(monkeypatch):
+    monkeypatch.setattr(_lc.urllib.request, "urlopen", _fake_urlopen_caps(
+        [{"name": "qwen2.5-coder:3b", "capabilities": ["completion"]}]))
+    assert _lc.LocalClient(model="qwen2.5-coder:3b").supports_tools() is False
+
+
+def test_supports_tools_false_when_model_not_pulled(monkeypatch):
+    monkeypatch.setattr(_lc.urllib.request, "urlopen", _fake_urlopen_caps([]))
+    assert _lc.LocalClient(model="qwen3-coder:30b").supports_tools() is False
+
+
+def test_chat_detects_tool_calls(monkeypatch):
+    """The exact motivating shape (spec 008 US1): a scripted NDJSON /api/chat
+    response whose final chunk carries message.tool_calls — chat() must return
+    it as a structured field, not require any text-pattern regex to find it."""
+    lines = [
+        b'{"message": {"role": "assistant", "content": ""}, "done": false}\n',
+        b'{"message": {"role": "assistant", "content": "", "tool_calls": '
+        b'[{"function": {"name": "lookup_symbol", "arguments": {"name": "TFooGuard"}}}]},'
+        b' "done": true}\n',
+    ]
+    monkeypatch.setattr(_lc.urllib.request, "urlopen",
+                        lambda req, timeout=None: _StreamResp(lines))
+    result = _lc.LocalClient(model="qwen3-coder:30b").chat(
+        messages=[{"role": "user", "content": "what fields does TFooGuard have?"}],
+        tools=[{"type": "function", "function": {"name": "lookup_symbol", "parameters": {}}}],
+    )
+    assert result["role"] == "assistant"
+    assert result["tool_calls"] == [
+        {"function": {"name": "lookup_symbol", "arguments": {"name": "TFooGuard"}}}
+    ]
+
+
+def test_chat_plain_content_no_tool_calls(monkeypatch):
+    lines = [
+        b'{"message": {"role": "assistant", "content": "final source"}, "done": true}\n',
+    ]
+    monkeypatch.setattr(_lc.urllib.request, "urlopen",
+                        lambda req, timeout=None: _StreamResp(lines))
+    result = _lc.LocalClient(model="qwen3-coder:30b").chat(messages=[{"role": "user", "content": "hi"}])
+    assert result["content"] == "final source"
+    assert result["tool_calls"] == []

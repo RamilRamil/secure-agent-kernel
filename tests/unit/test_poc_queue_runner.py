@@ -85,3 +85,138 @@ def test_file_manifest_uses_real_contract_names(two_contract_project):
     fm = pqr.build_file_manifest(two_contract_project, idx)
     assert "FooCDO:" in fm
     assert "Foo:" in fm
+
+
+# ── Feature 008: native tool-calling round-trip ─────────────────────────────
+
+LOOKUP_FIXTURE_SRC = """
+pragma solidity ^0.8.28;
+
+interface ICooldown {
+    struct TBalanceState {
+        uint256 pending;
+        uint256 claimable;
+    }
+}
+"""
+
+
+@pytest.fixture
+def lookup_fixture_project(tmp_path: Path) -> Path:
+    (tmp_path / "Cooldown.sol").write_text(LOOKUP_FIXTURE_SRC, encoding="utf-8")
+    return tmp_path
+
+
+class _FakeMarkerClient:
+    """Scripted client.generate() for the spec 007 text-marker round-trip."""
+    def __init__(self, responses):
+        self._responses = list(responses)
+        self.prompts: list[str] = []
+
+    def generate(self, prompt, options=None):
+        self.prompts.append(prompt)
+        return self._responses.pop(0)
+
+
+class _FakeToolClient:
+    """Scripted client.chat() for the native tool-calling round-trip."""
+    def __init__(self, responses):
+        self._responses = list(responses)
+        self.calls: list[list[dict]] = []
+
+    def chat(self, messages, tools=None, options=None):
+        self.calls.append(messages)
+        return self._responses.pop(0)
+
+
+def test_tool_and_marker_protocols_render_lookup_identically(lookup_fixture_project):
+    """SC-002: switching transport must not change WHAT gets resolved or how a
+    result is rendered — both protocols call the SAME _render_lookup_response(),
+    so the content a model actually sees must be byte-identical."""
+    idx = SymbolIndex.build(lookup_fixture_project)
+    expected = pqr._render_lookup_response([("TBalanceState", idx.lookup("TBalanceState"))])
+    assert "pending" in expected and "claimable" in expected  # sanity: real content
+
+    marker_client = _FakeMarkerClient(["LOOKUP: TBalanceState", "final marker source"])
+    pqr._generate_with_lookups(marker_client, "BASE PROMPT", {}, idx, 3, None)
+    assert expected in marker_client.prompts[-1]
+
+    tool_client = _FakeToolClient([
+        {"role": "assistant", "content": "",
+         "tool_calls": [{"function": {"name": "lookup_symbol", "arguments": {"name": "TBalanceState"}}}]},
+        {"role": "assistant", "content": "final tool source", "tool_calls": []},
+    ])
+    pqr._generate_with_tool_calls(tool_client, "BASE PROMPT", {}, idx, 3, None)
+    tool_msg_contents = [m["content"] for m in tool_client.calls[-1] if m.get("role") == "tool"]
+    assert tool_msg_contents == [expected]
+
+
+def test_tool_calls_respect_budget_and_log_each(lookup_fixture_project):
+    idx = SymbolIndex.build(lookup_fixture_project)
+    logged: list[tuple[str, bool, int]] = []
+    tool_client = _FakeToolClient([
+        {"role": "assistant", "content": "",
+         "tool_calls": [{"function": {"name": "lookup_symbol", "arguments": {"name": "TBalanceState"}}}]},
+        {"role": "assistant", "content": "",
+         "tool_calls": [{"function": {"name": "lookup_symbol", "arguments": {"name": "NotReal"}}}]},
+        {"role": "assistant", "content": "final", "tool_calls": []},
+    ])
+    result = pqr._generate_with_tool_calls(
+        tool_client, "BASE", {}, idx, budget=1,
+        on_lookup=lambda name, resolved, n: logged.append((name, resolved, n)),
+    )
+    # budget=1: only the FIRST call resolves; the second turn's tool_calls hits
+    # used >= budget and the round-trip stops, returning that turn's content.
+    assert logged == [("TBalanceState", True, 1)]
+    assert result == ""  # the turn that hit budget exhaustion had empty content
+
+
+def test_tool_call_missing_name_argument_is_unresolved(lookup_fixture_project):
+    """Edge case (spec.md): a malformed tool call must not crash — treated as
+    an unresolved lookup, logged, counted against budget."""
+    idx = SymbolIndex.build(lookup_fixture_project)
+    logged = []
+    tool_client = _FakeToolClient([
+        {"role": "assistant", "content": "",
+         "tool_calls": [{"function": {"name": "lookup_symbol", "arguments": {}}}]},
+        {"role": "assistant", "content": "final", "tool_calls": []},
+    ])
+    result = pqr._generate_with_tool_calls(
+        tool_client, "BASE", {}, idx, budget=3,
+        on_lookup=lambda name, resolved, n: logged.append((name, resolved, n)),
+    )
+    assert logged == [("", False, 0)]
+    assert result == "final"
+
+
+# ── Feature 008: protocol selection (contracts/protocol-selection.md) ──────
+
+class _StubClient:
+    def __init__(self, supports, model="qwen-test"):
+        self._supports = supports
+        self.model = model
+
+    def supports_tools(self):
+        return self._supports
+
+
+def test_auto_selects_tool_when_capable():
+    assert pqr._select_protocol("auto", _StubClient(True)) == ("tool", "detected")
+
+
+def test_auto_selects_marker_when_not_tool_capable():
+    assert pqr._select_protocol("auto", _StubClient(False)) == ("marker", "detected")
+
+
+def test_forced_tool_protocol_errors_on_incapable_model():
+    with pytest.raises(SystemExit) as exc_info:
+        pqr._select_protocol("tool", _StubClient(False))
+    assert exc_info.value.code == 2
+
+
+def test_forced_marker_protocol_on_capable_model():
+    assert pqr._select_protocol("marker", _StubClient(True)) == ("marker", "forced")
+
+
+def test_forced_tool_protocol_on_capable_model():
+    assert pqr._select_protocol("tool", _StubClient(True)) == ("tool", "forced")

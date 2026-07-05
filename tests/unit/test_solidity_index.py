@@ -69,6 +69,18 @@ def test_not_found_never_fabricated(fixture_project):
     assert idx.lookup("TotallyMadeUpStructName") == []
 
 
+def test_qualified_name_falls_back_to_bare(fixture_project):
+    """Live H-01 run (2026-07-05): the model asked `IFoo.TFooGuard`
+    and got resolved=False even though the bare symbol genuinely exists — the
+    index is keyed on bare names, so a qualified query must fall back to the
+    bare suffix rather than report a false not-found."""
+    idx = SymbolIndex.build(fixture_project)
+    bare = idx.lookup("TBalanceState")
+    qualified = idx.lookup("ICooldown.TBalanceState")
+    assert qualified == bare
+    assert idx.lookup("ICooldown.TotallyMadeUpStructName") == []
+
+
 def test_function_signature_and_modifiers(fixture_project):
     idx = SymbolIndex.build(fixture_project)
     matches = idx.lookup("cancel")

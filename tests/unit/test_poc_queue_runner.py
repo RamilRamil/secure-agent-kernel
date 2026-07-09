@@ -377,3 +377,169 @@ def test_scaffold_missing_types_against_real_scaffolds():
         pytest.skip("external target project not present on this machine")
     assert pqr.scaffold_missing_types(bad.read_text(), ["Foo"]) == ["Foo"]
     assert pqr.scaffold_missing_types(good.read_text(), ["Foo"]) == []
+
+
+# ── Feature 009 US1: verdict gates + deterministic repair helpers ──────────
+# These functions DECIDE pass/fail/compiled/vacuous/stall. Before spec 009 they
+# had zero direct tests — the exact gates where a bug becomes a false milestone
+# (spec 006 traces to a `_compiled` denylist bug caught only in a live run). Each
+# test pins a bug class actually seen this session, offline, synthetic input only.
+
+
+def test_compiled_positive_signal_only():
+    """SC-001/FR-002: `_compiled` must key on the POSITIVE 'Ran N tests' signal,
+    never on the absence of a known failure phrase. A real compile failure worded
+    differently from any anticipated denylist entry (the spec-006 incident:
+    'Encountered invalid solc version') must read as NOT compiled."""
+    # genuine run of a suite → compiled, regardless of pass/fail/revert after
+    assert pqr._compiled("Ran 2 tests for audit/poc/H_01.t.sol", "") is True
+    assert pqr._compiled("Ran 1 test for X\n[FAIL: Revert] testX()", "") is True
+    # the exact spec-006 class: a real compile failure with an unanticipated message
+    assert pqr._compiled("Error: Encountered invalid solc version in ...", "") is False
+    assert pqr._compiled("Compiler run failed:\nError (2904): Declaration not found", "") is False
+    # empty / whitespace / truncated output → not compiled, never an exception
+    assert pqr._compiled("", "") is False
+    assert pqr._compiled("   \n  ", "") is False
+
+
+def test_poc_defects_flags_empty_mock_and_missing_import():
+    """FR-003: the vacuous-PoC gate flags (a) an empty/commented body with no
+    assertion, (b) a re-declared/mocked target contract, (c) a missing target
+    import — the three evasions seen 2026-07-05."""
+    # (a) no active assertion — empty/commented test
+    empty = "contract PoC is Base { function test() public { /* nothing */ } }"
+    assert any("no active assertion" in d for d in pqr._poc_defects(empty, ["Target"], scaffold_used=True))
+    # (b) re-declares the real target as an inline mock
+    mock = ("import {Test} from 'forge-std/Test.sol';\n"
+            "contract Target { }\n"
+            "contract PoC is Base { function test() public { assertTrue(true); } }")
+    assert any("re-declares" in d for d in pqr._poc_defects(mock, ["Target"], scaffold_used=True))
+    # (c) missing target import (non-scaffold path — must import the target itself)
+    noimport = ("import {Test} from 'forge-std/Test.sol';\n"
+                "contract PoC { function test() public { assertTrue(true); } }")
+    assert any("does not import the real target" in d for d in pqr._poc_defects(noimport, ["Target"], scaffold_used=False))
+    # a clean scaffold-inheriting PoC that asserts and imports the target → no defects
+    clean = ("import {Target} from '../src/Target.sol';\n"
+             "contract PoC is Base { function test() public { assertEq(target.x(), 1); } }")
+    assert pqr._poc_defects(clean, ["Target"], scaffold_used=True) == []
+
+
+def test_stall_signature_keys_on_message_not_line():
+    """FR-004: a repeated identical error must produce the SAME stall signature even
+    when its reported line number shifts between attempts (the model rewrites the
+    whole file, so lines move). Root-caused 2026-07-05: a line-keyed signature
+    missed 4 of 5 real H-01 stalls."""
+    a = "Error (7576): Undeclared identifier.\n  --> audit/poc/H_01.t.sol:53:9:"
+    b = "Error (7576): Undeclared identifier.\n  --> audit/poc/H_01.t.sol:48:9:"
+    assert pqr._error_signature(a) == pqr._error_signature(b)
+    assert pqr._error_signature(a) == ("Undeclared identifier.",)
+    # a different error message → different signature
+    c = "Error (2904): Declaration not found."
+    assert pqr._error_signature(c) != pqr._error_signature(a)
+    # runtime FAIL reason signature, independent of gas/line noise
+    assert pqr._fail_signature("[FAIL: EvmError: Revert] testA() (gas: 44300562)") == ("EvmError: Revert",)
+
+
+def test_targeted_hints_resolve_member_and_path_errors():
+    """FR-005: `_targeted_hints`/`_sig_by_method` turn a compiler error into an
+    authoritative fix against the real signatures/paths, not a hope."""
+    callable_api = "// Foo — real callable signatures:\nfunction cancel(address vault, uint256 i) external;"
+    file_map = "Foo: ../../contracts/tranches/base/cooldown/Foo.sol"
+    # 9582 member-not-found → list the contract's real functions
+    member_err = 'Error (9582): Member "setFoo" not found or not visible after argument-dependent lookup in contract Foo.'
+    hints = pqr._targeted_hints(member_err, callable_api, file_map)
+    assert "setFoo" in hints and "cancel" in hints
+    # 6275 source-not-found → the real import path
+    src_err = 'Error (6275): Source "IFooCooldown.sol" not found'
+    hints2 = pqr._targeted_hints(src_err, callable_api, file_map)
+    assert "IFooCooldown" in hints2
+    # _sig_by_method finds a signature by method name across blocks
+    assert "cancel" in pqr._sig_by_method(callable_api, "cancel")
+    assert pqr._sig_by_method(callable_api, "nonexistent") == ""
+
+
+def test_fix_setup_override_strips_and_reinjects():
+    """FR-005: `_fix_setup_override` removes a PoC's own setUp() (which 4334s against
+    a non-virtual base) and re-injects its statements into the first test."""
+    # a realistic multi-line setUp body (how a model actually drafts it): the
+    # fixer drops the `super.setUp()` line and re-injects the remaining statements.
+    code = ("contract PoC is Base {\n"
+            "    function setUp() public override {\n"
+            "        super.setUp();\n"
+            "        deal(USDE, address(this), 10e18);\n"
+            "    }\n"
+            "    function test_x() public { assertTrue(true); }\n"
+            "}")
+    fixed, changed = pqr._fix_setup_override(code)
+    assert changed is True
+    assert "function setUp" not in fixed
+    assert "deal(USDE" in fixed  # statement re-injected into the test body
+    assert "super.setUp" not in fixed  # the base-call line is dropped
+    # a PoC with no own setUp is left untouched
+    clean = "contract PoC is Base { function test_x() public { assertTrue(true); } }"
+    _, changed2 = pqr._fix_setup_override(clean)
+    assert changed2 is False
+
+
+def test_fix_import_paths_repairs_bare_spdx(tmp_path):
+    """FR-005: `_fix_import_paths` restores a bare SPDX line's `//` (a 2314 syntax
+    error) line-by-line without touching other lines."""
+    code = "SPDX-License-Identifier: MIT\npragma solidity ^0.8.28;\ncontract PoC {}"
+    fixed, changed = pqr._fix_import_paths(code, tmp_path)
+    assert changed is True
+    assert fixed.startswith("// SPDX-License-Identifier: MIT")
+    assert "pragma solidity ^0.8.28;" in fixed  # untouched
+
+
+def test_revert_hints_quotes_fail_and_finding():
+    """FR-005: `revert_hints` (compiled-but-reverted feedback) quotes forge's real
+    [FAIL...] line plus the finding text, and returns '' when there is no FAIL."""
+    task = {"title": "Same-block silo padding", "description": "shift coverage() then cancel()"}
+    out = pqr.revert_hints("Ran 1 test\n[FAIL: EvmError: Revert] testX() (gas: 1)", "", task)
+    assert "EXPLOIT-LOGIC" in out and "EvmError: Revert" in out and "silo padding" in out
+    assert pqr.revert_hints("Ran 1 test\n[PASS] testX()", "", task) == ""
+
+
+# ── Feature 009 US3: scaffold sufficiency understands inheritance ──────────
+
+def test_scaffold_missing_types_sees_inherited_var(tmp_path):
+    """FR-008/SC-004: a scaffold whose needed type's state variable is declared in a
+    PARENT base it inherits must NOT be reported missing. The pre-009 single-file
+    regex was blind to this (it only saw the one file's text), the exact
+    regex-fragility class specs 007/008 moved away from."""
+    (tmp_path / "Parent.sol").write_text(
+        "pragma solidity ^0.8.28;\ncontract FooDeploy { Foo internal sharesCooldown; }",
+        encoding="utf-8")
+    idx = SymbolIndex.build(tmp_path)
+    scaffold = "pragma solidity ^0.8.28;\ncontract ReviewerBase is FooDeploy { address alice; }"
+    # AST + inheritance-aware: not missing (provided via the inherited parent)
+    assert pqr.scaffold_missing_types(scaffold, ["Foo"], idx) == []
+    # the old regex path (no index) is blind to inheritance → false-flags it,
+    # which is exactly the bug US3 fixes.
+    assert pqr.scaffold_missing_types(scaffold, ["Foo"], None) == ["Foo"]
+
+
+def test_scaffold_missing_types_still_flags_truly_absent(tmp_path):
+    """A scaffold that declares nothing of the needed type anywhere in its chain IS
+    reported missing (the real H-01 case: FooProtocolDeploymentBase provides
+    ERC20Foo, never Foo)."""
+    (tmp_path / "Parent.sol").write_text(
+        "pragma solidity ^0.8.28;\ncontract Deploy { ERC20Foo internal erc20Cooldown; }",
+        encoding="utf-8")
+    idx = SymbolIndex.build(tmp_path)
+    scaffold = "pragma solidity ^0.8.28;\ncontract Base is Deploy { address alice; }"
+    assert pqr.scaffold_missing_types(scaffold, ["Foo"], idx) == ["Foo"]
+
+
+def test_scaffold_missing_types_direct_declaration_via_ast(tmp_path):
+    """A directly-declared state var is seen by the AST path too (and, unlike the
+    regex, a bare mention in an import/comment does NOT count as provided)."""
+    idx = SymbolIndex.build(tmp_path)  # empty project index
+    direct = "pragma solidity ^0.8.28;\ncontract Base { Foo internal sharesCooldown; }"
+    assert pqr.scaffold_missing_types(direct, ["Foo"], idx) == []
+    # name only in an import + comment, never a real state var → still missing
+    mention_only = ("pragma solidity ^0.8.28;\n"
+                    "import {Foo} from './x.sol';\n"
+                    "// Foo is referenced here but not declared\n"
+                    "contract Base { address alice; }")
+    assert pqr.scaffold_missing_types(mention_only, ["Foo"], idx) == ["Foo"]

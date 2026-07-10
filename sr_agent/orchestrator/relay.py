@@ -24,7 +24,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
@@ -81,7 +81,7 @@ _RESPONSE_SCHEMA = """```json
 def request_analysis(target: str, context: str, relay_dir: Path) -> RelayRequest:
     """Write a human-readable analysis request packet for a target."""
     request_id = str(uuid4())
-    created_at = datetime.utcnow().isoformat()
+    created_at = datetime.now(timezone.utc).isoformat()
     req_path = _request_path(relay_dir, request_id)
     resp_path = _response_path(relay_dir, request_id)
     req_path.parent.mkdir(parents=True, exist_ok=True)

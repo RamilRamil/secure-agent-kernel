@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import TYPE_CHECKING
 from uuid import uuid4
@@ -57,7 +57,7 @@ class MemoryRecord(BaseModel):
     session_id: str
 
     # Timing
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
     # Content — exactly one of these should be set per record
     finding: dict | None = None          # serialised Finding (avoids circular import)

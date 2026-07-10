@@ -17,7 +17,7 @@ import json
 import logging
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from uuid import uuid4
@@ -50,7 +50,7 @@ def request_confirmation(action: Action, confirmations_dir: Path) -> Confirmatio
     """Write a pending confirmation request for an irreversible action."""
     confirmations_dir.mkdir(parents=True, exist_ok=True)
     confirmation_id = str(uuid4())
-    created_at = datetime.utcnow().isoformat()
+    created_at = datetime.now(timezone.utc).isoformat()
 
     payload = {
         "confirmation_id": confirmation_id,
@@ -128,7 +128,7 @@ def _record_decision(path: Path, status: ConfirmationStatus, reason: str | None 
     except Exception:
         data = {}
     data["status"] = status.value
-    data["decided_at"] = datetime.utcnow().isoformat()
+    data["decided_at"] = datetime.now(timezone.utc).isoformat()
     data["decided_reason"] = reason
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, indent=2), encoding="utf-8")

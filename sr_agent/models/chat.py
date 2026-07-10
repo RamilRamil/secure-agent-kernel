@@ -10,7 +10,7 @@ See specs/003-interactive-chat-mode/data-model.md.
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Literal
 from uuid import uuid4
 
@@ -93,7 +93,7 @@ class ChatSession(BaseModel):
     """A resumable conversation bound to exactly one project (spec Chat Session)."""
     session_id: str = Field(default_factory=lambda: str(uuid4()))
     principal: Principal
-    started_at: datetime = Field(default_factory=datetime.utcnow)
+    started_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     status: SessionStatus = "active"
     pending_confirmation_id: str | None = None
     pending_relay_request_id: str | None = None
@@ -125,7 +125,7 @@ class ConsequentialActionNotice(BaseModel):
     action_type: ActionType
     action_params: dict = Field(default_factory=dict)
     confirmation_id: str
-    shown_at: datetime = Field(default_factory=datetime.utcnow)
+    shown_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 PoCStatus = Literal[

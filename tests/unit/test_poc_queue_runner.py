@@ -680,3 +680,93 @@ def test_mutation_verify_unavailable(tmp_path, monkeypatch):
     monkeypatch.setattr(pqr, "run_tests", _boom)
     assert pqr.mutation_verify(proj, good_task, "p.t.sol", object(), events.append) == "unavailable"
     assert events[-1]["reason"] == "infra"
+
+
+# ── Feature 011: scaffold synthesis ────────────────────────────────────────
+
+class _FakeGenClient:
+    """A client whose .generate returns scripted text (for synthesize_scaffold)."""
+    def __init__(self, text):
+        self._text = text
+    def generate(self, prompt, options=None):
+        return self._text
+
+
+def _synth_project(tmp_path):
+    """A tmp project with the missing contract's real source, so
+    read_location_source finds it and synthesize_scaffold can ground on it."""
+    (tmp_path / "contracts").mkdir()
+    (tmp_path / "contracts" / "Foo.sol").write_text(
+        "// SPDX-License-Identifier: MIT\npragma solidity ^0.8.28;\n"
+        "contract Foo { constructor() {} }\n", encoding="utf-8")
+    return tmp_path
+
+
+_SYNTH_BASE_CODE = ("// SPDX-License-Identifier: MIT\npragma solidity ^0.8.28;\n"
+                    "abstract contract SynthBase_H_01 is ExistingBase {\n"
+                    "    Foo internal sharesCooldown;\n"
+                    "    function setUpSynth() internal { sharesCooldown = new Foo(); }\n"
+                    "}\n")
+_COMPILE_OK = type("R", (), {"passed": True, "exit_code": 0,
+                             "stdout": "Ran 1 test for audit/poc/_synth_smoke.t.sol", "stderr": ""})()
+_COMPILE_FAIL = type("R", (), {"passed": False, "exit_code": 1,
+                               "stdout": "Compiler run failed:\nError (7576): Undeclared identifier.", "stderr": ""})()
+
+
+def test_synthesize_scaffold_accepts_compiling(tmp_path, monkeypatch):
+    """SC-001/FR-004: a synthesized base that COMPILES is accepted — returned as a
+    Path under the untracked audit area, with a `scaffold_synthesized` event."""
+    proj = _synth_project(tmp_path)
+    monkeypatch.setattr(pqr, "run_tests", lambda *a, **k: _COMPILE_OK)
+    events = []
+    path = pqr.synthesize_scaffold(
+        proj, {"id": "H-01", "title": "t", "location": "Foo", "description": "d"},
+        ["Foo"], "abstract contract ExistingBase {}", None,
+        _FakeGenClient(_SYNTH_BASE_CODE), object(), events.append)
+    assert path is not None
+    assert path.exists() and "audit/poc/_synth" in str(path)
+    assert events[-1]["event"] == "scaffold_synthesized"
+
+
+def test_synthesize_writes_only_audit_area(tmp_path, monkeypatch):
+    """FR-006/SC-004: tracked source is unchanged; the smoke test is cleaned up; a
+    rejected base is removed."""
+    proj = _synth_project(tmp_path)
+    src_before = (proj / "contracts" / "Foo.sol").read_text()
+    monkeypatch.setattr(pqr, "run_tests", lambda *a, **k: _COMPILE_FAIL)
+    events = []
+    path = pqr.synthesize_scaffold(
+        proj, {"id": "H-01", "title": "t", "location": "Foo", "description": "d"},
+        ["Foo"], "", None, _FakeGenClient(_SYNTH_BASE_CODE), object(), events.append)
+    assert path is None  # didn't compile → discarded
+    assert (proj / "contracts" / "Foo.sol").read_text() == src_before  # tracked src untouched
+    assert not (proj / "audit" / "poc" / "_synth_smoke.t.sol").exists()  # smoke cleaned up
+    assert not (proj / "audit" / "poc" / "_synth" / "SynthBase_H_01.sol").exists()  # rejected base removed
+
+
+def test_synthesize_scaffold_failure_paths(tmp_path, monkeypatch):
+    """FR-004/FR-005/SC-002: no_build / no_output / infra each → None + the right
+    reason, never a used base."""
+    proj = _synth_project(tmp_path)
+    task = {"id": "H-01", "title": "t", "location": "Foo", "description": "d"}
+
+    # won't compile → no_build
+    monkeypatch.setattr(pqr, "run_tests", lambda *a, **k: _COMPILE_FAIL)
+    ev = []
+    assert pqr.synthesize_scaffold(proj, task, ["Foo"], "", None,
+                                   _FakeGenClient(_SYNTH_BASE_CODE), object(), ev.append) is None
+    assert ev[-1]["reason"] == "no_build"
+
+    # model returns non-Solidity → no_output (run_tests never reached)
+    ev = []
+    assert pqr.synthesize_scaffold(proj, task, ["Foo"], "", None,
+                                   _FakeGenClient("sorry, I cannot help"), object(), ev.append) is None
+    assert ev[-1]["reason"] == "no_output"
+
+    # infra error during validation → infra
+    def _boom(*a, **k): raise RuntimeError("sandbox down")
+    monkeypatch.setattr(pqr, "run_tests", _boom)
+    ev = []
+    assert pqr.synthesize_scaffold(proj, task, ["Foo"], "", None,
+                                   _FakeGenClient(_SYNTH_BASE_CODE), object(), ev.append) is None
+    assert ev[-1]["reason"] == "infra"

@@ -543,3 +543,140 @@ def test_scaffold_missing_types_direct_declaration_via_ast(tmp_path):
                     "// Foo is referenced here but not declared\n"
                     "contract Base { address alice; }")
     assert pqr.scaffold_missing_types(mention_only, ["Foo"], idx) == ["Foo"]
+
+
+# ── Feature 010: mutation-based PASS verification ──────────────────────────
+
+import subprocess as _subprocess
+
+_SYNTH_REPORT = '''
+## Findings
+[88] **1. Same-block silo padding lets a redeemer self-select the exit-tier**
+
+**Fix**
+```diff
+--- a/src/A.sol
++++ b/src/A.sol
+@@ -1,2 +1,3 @@
+ contract A {
++    uint256 public added;
+ }
+```
+---
+[75] **2. finalizeWithFee checks the wrong owner cap**
+
+(no fix block for this finding)
+---
+'''
+
+
+def test_extract_fix_verbatim():
+    """FR-001/R1: the finding's fenced diff is pulled byte-for-byte; a finding with
+    no `**Fix**` block yields None (e.g. the report's finding #2/#4)."""
+    fix1 = pqr.extract_fix_for_finding(
+        _SYNTH_REPORT, {"id": "H-01", "title": "Same-block silo padding lets a redeemer self-select the exit-tier"})
+    assert fix1 is not None
+    assert "+    uint256 public added;" in fix1  # verbatim, indentation intact
+    assert "--- a/src/A.sol" in fix1
+    fix2 = pqr.extract_fix_for_finding(
+        _SYNTH_REPORT, {"id": "H-02", "title": "finalizeWithFee checks the wrong owner cap"})
+    assert fix2 is None
+    # a title that matches nothing → no confident section → None, never a wrong diff
+    assert pqr.extract_fix_for_finding(_SYNTH_REPORT, {"id": "X", "title": "totally unrelated topic here"}) is None
+
+
+def _init_git_project(tmp_path):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "A.sol").write_text("contract A {\n}\n", encoding="utf-8")
+    _subprocess.run(["git", "init", "-q"], cwd=tmp_path)
+    return tmp_path
+
+
+def test_git_apply_real_diff(tmp_path):
+    """FR-009: a real unified diff applies via standard tooling; a non-applying diff
+    reports failure (no fuzzy patching)."""
+    proj = _init_git_project(tmp_path)
+    good = ("--- a/src/A.sol\n+++ b/src/A.sol\n@@ -1,2 +1,3 @@\n"
+            " contract A {\n+    uint256 public added;\n }\n")
+    assert pqr._git_apply(proj, good) is True
+    assert "added" in (proj / "src" / "A.sol").read_text()
+    # a diff that references a nonexistent file / wrong context → clean failure
+    bad = ("--- a/src/Nope.sol\n+++ b/src/Nope.sol\n@@ -1,1 +1,2 @@\n"
+           " contract Nope {}\n+// x\n")
+    assert pqr._git_apply(proj, bad) is False
+
+
+class _MutResult:
+    def __init__(self, passed, stdout="Ran 1 test\n[PASS] t()", stderr=""):
+        self.passed = passed
+        self.exit_code = 0 if passed else 1
+        self.stdout = stdout if passed else "Compiler run failed:\nRan 1 test\n[FAIL: Revert] t()"
+        self.stderr = stderr
+
+
+def _mut_project(tmp_path):
+    """A real tmp 'project' with a git repo + the finding's fix target, so
+    mutation_verify's copytree + git_apply run for real."""
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "A.sol").write_text("contract A {\n}\n", encoding="utf-8")
+    _subprocess.run(["git", "init", "-q"], cwd=tmp_path)
+    return tmp_path
+
+
+_FIX_DIFF = ("--- a/src/A.sol\n+++ b/src/A.sol\n@@ -1,2 +1,3 @@\n"
+             " contract A {\n+    uint256 public added;\n }\n")
+
+
+def test_mutation_verify_verdicts(tmp_path, monkeypatch):
+    """SC-001/SC-002/FR-004: patched-run FAILS → verified; patched-run PASSES →
+    unverified_pass; the real project tree is unchanged after either."""
+    proj = _mut_project(tmp_path)
+    before = (proj / "src" / "A.sol").read_text()
+    task = {"id": "H-01", "title": "t", "fix": _FIX_DIFF}
+    events = []
+
+    # patched-run FAILS → the exploit genuinely depends on the bug → verified
+    monkeypatch.setattr(pqr, "run_tests", lambda *a, **k: _MutResult(passed=False))
+    assert pqr.mutation_verify(proj, task, "audit/poc/H_01.t.sol", object(), events.append) == "verified"
+    assert events[-1]["event"] == "mutation_verified"
+
+    # patched-run still PASSES → it wasn't testing the exploit → unverified_pass
+    events.clear()
+    monkeypatch.setattr(pqr, "run_tests", lambda *a, **k: _MutResult(passed=True))
+    assert pqr.mutation_verify(proj, task, "audit/poc/H_01.t.sol", object(), events.append) == "unverified_pass"
+    assert events[-1]["event"] == "mutation_unverified"
+
+    # FR-004: the real source tree is byte-for-byte unchanged (all work on a copy)
+    assert (proj / "src" / "A.sol").read_text() == before
+
+
+def test_mutation_verify_unavailable(tmp_path, monkeypatch):
+    """FR-005/FR-006: no fix / diff won't apply / patched won't build / infra error
+    all return 'unavailable' — never a downgrade."""
+    proj = _mut_project(tmp_path)
+    events = []
+
+    # no fix
+    assert pqr.mutation_verify(proj, {"id": "H", "title": "t"}, "p.t.sol", object(), events.append) == "unavailable"
+    assert events[-1]["reason"] == "no_fix"
+
+    # diff won't apply
+    bad_task = {"id": "H", "title": "t", "fix": "--- a/src/Nope.sol\n+++ b/src/Nope.sol\n@@ -1 +1,2 @@\n x\n+y\n"}
+    events.clear()
+    assert pqr.mutation_verify(proj, bad_task, "p.t.sol", object(), events.append) == "unavailable"
+    assert events[-1]["reason"] == "patch_failed"
+
+    # patched source builds-fails (not "Ran N tests") → patched_no_build, not a downgrade
+    good_task = {"id": "H", "title": "t", "fix": _FIX_DIFF}
+    events.clear()
+    monkeypatch.setattr(pqr, "run_tests", lambda *a, **k: type("R", (), {
+        "passed": False, "exit_code": 1, "stdout": "Compiler run failed: Error (1): x", "stderr": ""})())
+    assert pqr.mutation_verify(proj, good_task, "p.t.sol", object(), events.append) == "unavailable"
+    assert events[-1]["reason"] == "patched_no_build"
+
+    # infra error on the re-run → unavailable(infra), never a downgrade
+    events.clear()
+    def _boom(*a, **k): raise RuntimeError("sandbox down")
+    monkeypatch.setattr(pqr, "run_tests", _boom)
+    assert pqr.mutation_verify(proj, good_task, "p.t.sol", object(), events.append) == "unavailable"
+    assert events[-1]["reason"] == "infra"

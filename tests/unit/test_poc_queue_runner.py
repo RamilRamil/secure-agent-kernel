@@ -770,3 +770,59 @@ def test_synthesize_scaffold_failure_paths(tmp_path, monkeypatch):
     assert pqr.synthesize_scaffold(proj, task, ["Foo"], "", None,
                                    _FakeGenClient(_SYNTH_BASE_CODE), object(), ev.append) is None
     assert ev[-1]["reason"] == "infra"
+
+
+# ── Feature 012: harness prompt management ─────────────────────────────────
+
+class _FakeVersionedTracer:
+    """A tracer whose get_prompt_versioned returns a scripted (text, version)."""
+    enabled = True
+    def __init__(self, text, version):
+        self._text, self._version = text, version
+        self._client = None
+    def get_prompt_versioned(self, name, fallback):
+        return self._text, self._version
+
+
+def test_resolve_prompt_fallback_when_disabled():
+    """FR-002/SC-001: tracing off → the byte-exact constant + version None."""
+    from sr_agent.eval.tracer import NOOP_TRACER
+    text, prov = pqr._resolve_prompt(NOOP_TRACER, "poc-draft", "HELLO {who}", who="world")
+    assert text == "HELLO world"
+    assert prov == {"name": "poc-draft", "version": None}
+
+
+def test_resolve_prompt_uses_versioned():
+    """SC-002: a fetched versioned prompt is used and its version recorded."""
+    tr = _FakeVersionedTracer("FETCHED {who}", 5)
+    text, prov = pqr._resolve_prompt(tr, "poc-draft", "FALLBACK {who}", who="x")
+    assert text == "FETCHED x"
+    assert prov == {"name": "poc-draft", "version": 5}
+
+
+def test_resolve_prompt_format_failure_falls_back():
+    """FR-007: an edited fetched template referencing a placeholder the harness does
+    NOT provide raises KeyError on .format → fall back to the constant (never
+    crashes) with version None."""
+    tr = _FakeVersionedTracer("EDITED with {unexpected} key", 9)  # harness passes only {who}
+    text, prov = pqr._resolve_prompt(tr, "poc-draft", "FALLBACK {who}", who="x")
+    assert text == "FALLBACK x"                 # fell back to the constant
+    assert prov == {"name": "poc-draft", "version": None}
+
+
+def test_seed_prompts_noop_when_disabled():
+    """SC-005: seeding is a silent no-op with Langfuse disabled."""
+    from sr_agent.eval.tracer import NOOP_TRACER
+    pqr.seed_prompts(NOOP_TRACER)  # must not raise
+
+
+def test_seed_prompts_creates_one_per_prompt():
+    """SC-005: with a Langfuse client, one create per harness prompt, production."""
+    created = []
+    class _C:
+        def create_prompt(self, name, prompt, labels):
+            created.append((name, labels))
+    tr = type("T", (), {"enabled": True, "_client": _C()})()
+    pqr.seed_prompts(tr)
+    assert {n for n, _ in created} == set(pqr._HARNESS_PROMPTS)
+    assert all(labels == ["production"] for _, labels in created)

@@ -139,6 +139,22 @@ class Tracer:
             logger.info("Langfuse get_prompt(%r) failed, using built-in prompt (%s: %s)", name, type(e).__name__, e)
             return fallback
 
+    def get_prompt_versioned(self, name: str, fallback: str) -> tuple[str, int | None]:
+        """Like `get_prompt`, but also returns the fetched prompt's VERSION so a
+        caller can record which version produced a result (feature 012). Additive
+        — `get_prompt` above is unchanged for its existing callers. Returns
+        `(fallback, None)` on every disabled/error path — the version is never
+        fabricated; a fallback-sourced prompt has no version."""
+        if not self._client:
+            return fallback, None
+        try:
+            p = self._client.get_prompt(name, fallback=fallback)
+            return p.prompt, getattr(p, "version", None)
+        except Exception as e:
+            logger.info("Langfuse get_prompt_versioned(%r) failed, using built-in prompt (%s: %s)",
+                        name, type(e).__name__, e)
+            return fallback, None
+
 
 # Safe default for call sites that don't wire a real Tracer through — never
 # touches config or the network.

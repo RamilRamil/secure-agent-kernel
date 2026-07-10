@@ -258,3 +258,37 @@ def test_chat_plain_content_no_tool_calls(monkeypatch):
     result = _lc.LocalClient(model="qwen3-coder:30b").chat(messages=[{"role": "user", "content": "hi"}])
     assert result["content"] == "final source"
     assert result["tool_calls"] == []
+
+
+# ── get_prompt_versioned (feature 012: additive, graceful) ──────────────────
+
+def test_get_prompt_versioned_disabled_returns_fallback_none():
+    """A disabled tracer (no client) returns (fallback, None) — never fabricates a
+    version, never touches the network."""
+    from sr_agent.eval.tracer import Tracer
+    t = Tracer()  # no keys → disabled
+    assert t.get_prompt_versioned("poc-draft", "FALLBACK") == ("FALLBACK", None)
+
+
+def test_get_prompt_versioned_uses_fetched_version(monkeypatch):
+    """A Langfuse client returning a versioned prompt yields (text, version)."""
+    from sr_agent.eval import tracer as _tr
+    t = _tr.Tracer()
+    fake_prompt = type("P", (), {"prompt": "FETCHED {x}", "version": 7})()
+    t._client = type("C", (), {"get_prompt": lambda self, name, fallback=None: fake_prompt})()
+    assert t.get_prompt_versioned("poc-draft", "FALLBACK") == ("FETCHED {x}", 7)
+
+
+def test_get_prompt_versioned_fetch_error_falls_back():
+    """A raising client → (fallback, None), never an error out of the accessor."""
+    from sr_agent.eval import tracer as _tr
+    t = _tr.Tracer()
+    def _raise(self, name, fallback=None): raise RuntimeError("langfuse down")
+    t._client = type("C", (), {"get_prompt": _raise})()
+    assert t.get_prompt_versioned("poc-draft", "FALLBACK") == ("FALLBACK", None)
+
+
+def test_get_prompt_unchanged_still_returns_text():
+    """FR-004: the existing get_prompt contract (text only) is unchanged."""
+    from sr_agent.eval.tracer import Tracer
+    assert Tracer().get_prompt("poc-draft", "FALLBACK") == "FALLBACK"

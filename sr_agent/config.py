@@ -18,6 +18,9 @@ class Config:
     knowledge_root: Path
     confirmations_root: Path
     relay_root: Path
+    # Experiential knowledge loop (feature 014) — candidate queue for pending lessons.
+    # Promoted lessons live under knowledge_root/lessons/; this is the pending side.
+    lessons_root: Path
 
     # SmartGraphical engine (feature 002) — external structural+logic analyzer.
     # Empty string disables the engine; pipeline auto-skips if unset/unavailable.
@@ -59,6 +62,7 @@ def load_config() -> Config:
         knowledge_root=Path(os.environ.get("SR_KNOWLEDGE_ROOT", "./knowledge")),
         confirmations_root=Path(os.environ.get("SR_CONFIRMATIONS_ROOT", "./confirmations")),
         relay_root=Path(os.environ.get("SR_RELAY_ROOT", "./relay")),
+        lessons_root=Path(os.environ.get("SR_LESSONS_ROOT", "./lessons")),
         smartgraphical_root=os.environ.get("SR_SMARTGRAPHICAL_ROOT", ""),
         stage1_model=os.environ.get("SR_STAGE1_MODEL", "claude-opus-4-8"),
         stage2_model=os.environ.get("SR_STAGE2_MODEL", "sr-stage2"),

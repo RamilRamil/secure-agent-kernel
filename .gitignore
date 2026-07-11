@@ -38,6 +38,10 @@ research/papers/*.pdf
 # Out-of-band confirmation files (runtime, project-specific)
 /confirmations/
 
+# Experiential-knowledge-loop candidate queue (feature 014, runtime — promoted
+# lessons live under knowledge/lessons/ and ARE tracked; this pending side is not)
+/lessons/
+
 # Generated PoC test files (Phase 6 output, not source)
 tests/poc/
 

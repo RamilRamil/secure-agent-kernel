@@ -179,14 +179,14 @@ def test_tool_call_missing_name_argument_is_unresolved(lookup_fixture_project):
     tool_client = _FakeToolClient([
         {"role": "assistant", "content": "",
          "tool_calls": [{"function": {"name": "lookup_symbol", "arguments": {}}}]},
-        {"role": "assistant", "content": "final", "tool_calls": []},
+        {"role": "assistant", "content": "pragma solidity ^0.8.28;\ncontract X {}", "tool_calls": []},
     ])
     result = pqr._generate_with_tool_calls(
         tool_client, "BASE", {}, idx, budget=3,
         on_lookup=lambda name, resolved, n: logged.append((name, resolved, n)),
     )
     assert logged == [("", False, 0)]
-    assert result == "final"
+    assert "pragma solidity" in result and "contract X" in result
 
 
 def test_raw_function_tag_leaked_as_text_is_parsed_not_written(lookup_fixture_project):
@@ -201,14 +201,14 @@ def test_raw_function_tag_leaked_as_text_is_parsed_not_written(lookup_fixture_pr
         {"role": "assistant",
          "content": '<function=lookup_symbol>{"name": "TBalanceState"}</function>',
          "tool_calls": []},
-        {"role": "assistant", "content": "final clean source", "tool_calls": []},
+        {"role": "assistant", "content": "pragma solidity ^0.8.28;\ncontract X {}", "tool_calls": []},
     ])
     result = pqr._generate_with_tool_calls(
         tool_client, "BASE", {}, idx, budget=3,
         on_lookup=lambda name, resolved, n: logged.append((name, resolved, n)),
     )
     assert logged == [("TBalanceState", True, 1)]
-    assert result == "final clean source"
+    assert "pragma solidity" in result
     assert "<function=" not in result
 
 
@@ -219,12 +219,12 @@ def test_raw_function_tag_stripped_even_if_never_resolved(lookup_fixture_project
     idx = SymbolIndex.build(lookup_fixture_project)
     tool_client = _FakeToolClient([
         {"role": "assistant",
-         "content": 'some prose <function=lookup_symbol>garbage</function> more text',
+         "content": '<function=lookup_symbol>garbage</function>\npragma solidity ^0.8.28;\ncontract X {}',
          "tool_calls": []},
     ])
     result = pqr._generate_with_tool_calls(tool_client, "BASE", {}, idx, budget=0, on_lookup=None)
     assert "<function=" not in result
-    assert "some prose" in result and "more text" in result
+    assert "pragma solidity" in result and "contract X" in result
 
 
 def test_tool_call_wrapper_leaked_as_text_is_parsed(lookup_fixture_project):
@@ -239,14 +239,14 @@ def test_tool_call_wrapper_leaked_as_text_is_parsed(lookup_fixture_project):
         {"role": "assistant",
          "content": '<tool_call>{"name": "lookup_symbol", "arguments": {"name": "TBalanceState"}}</tool_call>',
          "tool_calls": []},
-        {"role": "assistant", "content": "final clean source", "tool_calls": []},
+        {"role": "assistant", "content": "pragma solidity ^0.8.28;\ncontract X {}", "tool_calls": []},
     ])
     result = pqr._generate_with_tool_calls(
         tool_client, "BASE", {}, idx, budget=3,
         on_lookup=lambda name, resolved, n: logged.append((name, resolved, n)),
     )
     assert logged == [("TBalanceState", True, 1)]
-    assert result == "final clean source"
+    assert "pragma solidity" in result
 
 
 def test_orphan_tool_call_marker_stripped(lookup_fixture_project):

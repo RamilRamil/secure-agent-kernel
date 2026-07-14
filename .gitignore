@@ -38,9 +38,14 @@ research/papers/*.pdf
 # Out-of-band confirmation files (runtime, project-specific)
 /confirmations/
 
-# Experiential-knowledge-loop candidate queue (feature 014, runtime — promoted
-# lessons live under knowledge/lessons/ and ARE tracked; this pending side is not)
+# Experiential-knowledge-loop stores (feature 014, runtime). Both are key-specific and
+# NOT committed: the pending candidate queue, and the promoted-lesson corpus (HMAC-signed
+# under the operator's SR_SECRET_KEY — dev-key-signed lessons must never enter the repo).
 /lessons/
+/knowledge/lessons/
+
+# Local operator runbooks (per-run target paths / tunnel URLs — never commit)
+*.local.md
 
 # Generated PoC test files (Phase 6 output, not source)
 tests/poc/

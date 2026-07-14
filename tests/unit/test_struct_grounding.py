@@ -44,3 +44,19 @@ def test_on_demand_lookup_still_returns_fields():
     # regression guard for FR-005: the lookup path is unchanged and still carries the fields.
     ms = _idx().lookup("S")
     assert ms and "uint32 a" in ms[0].definition
+
+
+def test_nested_type_grounding_includes_reference_note():
+    # feature 016 US2: a nested struct's grounding carries the "use Container.Type" note
+    g = expand_referenced_types("function f(S calldata s) external;", _idx())
+    assert "nested inside" in g and "I.S" in g
+    assert "do NOT write" in g or "do not write" in g.lower()
+
+
+def test_note_only_attaches_to_nested_types():
+    # the note is conditional on a non-empty container: a struct in interface A gets it as
+    # "A.S", never a different container's note (guards the per-type conditional wiring).
+    idx = SymbolIndex.build_from_source(
+        "interface A { struct SA { uint a; } function f(SA s) external; }")
+    g = expand_referenced_types("function f(SA s) external;", idx)
+    assert "nested inside A" in g and "A.SA" in g and "B." not in g

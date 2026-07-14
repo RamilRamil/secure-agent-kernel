@@ -71,8 +71,14 @@ def test_generate_without_fmt_omits_json_config(fake_sdk):
     assert fake_sdk["config"] is None
 
 
-def test_ready_false_and_generate_raises_without_sdk():
-    # No fake_sdk fixture → google-genai genuinely absent in this env.
+def test_ready_false_and_generate_raises_without_sdk(monkeypatch):
+    # Force the SDK-absent condition deterministically (do NOT depend on whether
+    # google-genai happens to be installed in this env — that made this test flaky).
+    import sr_agent.llm_core.gemini_client as gc
+
+    def _no_sdk():
+        raise GeminiUnavailable("google-genai not installed")
+    monkeypatch.setattr(gc, "_sdk", _no_sdk)
     c = _client()
     assert c.ready() is False
     with pytest.raises(GeminiUnavailable):

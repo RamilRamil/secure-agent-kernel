@@ -1,4 +1,5 @@
 import os
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -27,6 +28,13 @@ class Config:
     # Experiential knowledge loop (feature 014) — candidate queue for pending lessons.
     # Promoted lessons live under knowledge_root/lessons/; this is the pending side.
     lessons_root: Path
+    # Cloned audit targets (feature 021) — a git-URL target is fetched here. MUST be
+    # EXTERNAL to the agent repo (the session guard rejects paths under it), so the
+    # default is the system temp dir. Gitignored; target code never enters the repo.
+    workspaces_root: Path
+    # Optional git token (feature 021) for cloning PRIVATE target repos. Write-only:
+    # never returned/persisted/logged/argv. Empty by default (public repos need none).
+    git_token: str
 
     # SmartGraphical engine (feature 002) — external structural+logic analyzer.
     # Empty string disables the engine; pipeline auto-skips if unset/unavailable.
@@ -71,6 +79,9 @@ def load_config() -> Config:
         confirmations_root=Path(os.environ.get("SR_CONFIRMATIONS_ROOT", "./confirmations")),
         relay_root=Path(os.environ.get("SR_RELAY_ROOT", "./relay")),
         lessons_root=Path(os.environ.get("SR_LESSONS_ROOT", "./lessons")),
+        workspaces_root=Path(os.environ.get(
+            "SR_WORKSPACES_ROOT", str(Path(tempfile.gettempdir()) / "sr-agent-workspaces"))),
+        git_token=os.environ.get("GITHUB_TOKEN", ""),
         smartgraphical_root=os.environ.get("SR_SMARTGRAPHICAL_ROOT", ""),
         stage1_model=os.environ.get("SR_STAGE1_MODEL", "claude-opus-4-8"),
         stage2_model=os.environ.get("SR_STAGE2_MODEL", "sr-stage2"),

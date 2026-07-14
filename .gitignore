@@ -69,3 +69,6 @@ scripts/poc_queue.json
 
 # codegraph (spec 017): generated code-map output, never committed
 graphify-out/
+
+# cloned audit targets (spec 021): fetched target code, never committed
+/workspaces/

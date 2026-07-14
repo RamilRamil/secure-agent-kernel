@@ -48,7 +48,7 @@ class SessionFacts(BaseModel):
 
 class RoutingDecision(BaseModel):
     """Which tier produced a turn + why it escalated (FR-010, research R2/R3/R10)."""
-    tier: Literal["local", "relay", "blocked_local_unavailable"]
+    tier: Literal["local", "relay", "additional", "blocked_local_unavailable"]
     escalation_trigger: EscalationTrigger | None = None
     escalation_source: Literal["model_self_report", "deterministic_guard"] | None = None
 

@@ -19,8 +19,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Literal
 
 from sr_agent.guardrails.escalation import EscalationResult, evaluate_triggers
-from sr_agent.llm_core.gemini_client import GeminiClient
-from sr_agent.llm_core.local_client import LocalClient
+from sr_agent.llm_core.gemini_client import GeminiClient, GeminiUnavailable
+from sr_agent.llm_core.local_client import LocalClient, ModelUnavailableError
 from sr_agent.llm_core.schemas import AgentAction, EscalationTrigger
 from sr_agent.orchestrator.relay import request_analysis
 
@@ -42,7 +42,7 @@ class ReasoningOutcome:
     agent_action: AgentAction | None = None          # iff kind == "action"
     relay_request_id: str | None = None              # iff kind == "paused_relay"
     # FR-010 visibility — which tier produced this and why it escalated.
-    tier: Literal["local", "relay", "blocked_local_unavailable"] = "local"
+    tier: Literal["local", "relay", "additional", "blocked_local_unavailable"] = "local"
     escalation_trigger: EscalationTrigger | None = None
     escalation_source: Literal["model_self_report", "deterministic_guard"] | None = None
 
@@ -61,6 +61,9 @@ class ChatReasoningProvider:
     local: LocalClient | GeminiClient
     session: "Session"
     relay_dir: Path
+    # Optional ADDITIONAL agent (spec 019) consulted on escalation. Same duck
+    # interface (`generate(prompt, fmt=…)`). None → escalation uses the file relay.
+    additional: LocalClient | GeminiClient | None = None
     existing_findings: list = field(default_factory=list)
     evaluate_fn: Callable[..., EscalationResult] = evaluate_triggers
     # Audit-domain pieces, injected by the composition root (feature 004, R6).
@@ -103,6 +106,26 @@ class ChatReasoningProvider:
 
     def _escalate(self, messages, trigger, source) -> ReasoningOutcome:
         context = self._render(messages)
+        # ADDITIONAL agent configured (spec 019): consult it automatically instead
+        # of the manual file relay. Its answer is a normal AgentAction that RE-ENTERS
+        # run_turn's own action path (tool dispatch / request_confirmation) — it is
+        # NOT re-fed through _escalate, so a privileged action still hits the human
+        # gate (paused_confirmation) and no re-escalation loop can form (C2). The
+        # resulting ChatTurn is external_llm_output like every model turn.
+        if self.additional is not None:
+            try:
+                raw = self.additional.generate(context, fmt="json")
+            except (ModelUnavailableError, GeminiUnavailable) as e:
+                # C1: additional unreachable / bad key / missing SDK → fall back to
+                # the relay so the escalation still resolves; never an unhandled raise.
+                logger.warning("additional agent unavailable (%s) — falling back to relay", e)
+            else:
+                action = self._parse(raw)  # malformed JSON → ValueError, handled by run_turn
+                logger.info("chat turn escalated to ADDITIONAL agent (%s)", source)
+                return ReasoningOutcome(
+                    kind="action", agent_action=action, tier="additional",
+                    escalation_trigger=trigger, escalation_source=source,
+                )
         req = request_analysis(target=f"chat:{self.session.session_id}", context=context, relay_dir=self.relay_dir)
         logger.info("chat turn escalated to relay (%s, trigger=%s)", source, trigger)
         return ReasoningOutcome(

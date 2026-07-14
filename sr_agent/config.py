@@ -7,6 +7,10 @@ from pathlib import Path
 class Config:
     # LLM APIs
     anthropic_api_key: str
+    # Optional Gemini key (spec 018) — the operator frontend can also supply one
+    # at runtime, which takes precedence. Empty by default; the core loop never
+    # needs it (Constitution V).
+    gemini_api_key: str
     alchemy_api_key: str
     tenderly_api_key: str
 
@@ -55,6 +59,7 @@ def load_config() -> Config:
         # Only the ClaudeClient path (non-chat audit stages) needs this, and it
         # errors clearly at construction if it's missing.
         anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY", ""),
+        gemini_api_key=os.environ.get("GEMINI_API_KEY", ""),
         alchemy_api_key=os.environ.get("ALCHEMY_API_KEY", ""),
         tenderly_api_key=os.environ.get("TENDERLY_API_KEY", ""),
         secret_key=bytes.fromhex(_require("SR_SECRET_KEY")),

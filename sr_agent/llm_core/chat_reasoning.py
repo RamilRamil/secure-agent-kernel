@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Literal
 
 from sr_agent.guardrails.escalation import EscalationResult, evaluate_triggers
+from sr_agent.llm_core.gemini_client import GeminiClient
 from sr_agent.llm_core.local_client import LocalClient
 from sr_agent.llm_core.schemas import AgentAction, EscalationTrigger
 from sr_agent.orchestrator.relay import request_analysis
@@ -54,7 +55,10 @@ class ChatReasoningProvider:
     the provider never touches ChatSession/SessionFacts (those are folded into
     `messages` by the caller — see the contract).
     """
-    local: LocalClient
+    # Any reasoning client that is duck-compatible on the two methods used below
+    # (`ready()` and `generate(prompt, fmt=…)`): the local Ollama client, or the
+    # optional GeminiClient (spec 018). Only those two methods are ever called.
+    local: LocalClient | GeminiClient
     session: "Session"
     relay_dir: Path
     existing_findings: list = field(default_factory=list)

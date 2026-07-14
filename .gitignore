@@ -66,3 +66,6 @@ cache/
 # target-specific PoC artifacts must never enter the agent repo
 scripts/poc_queue.json
 **/_extracted_tasks.json
+
+# codegraph (spec 017): generated code-map output, never committed
+graphify-out/

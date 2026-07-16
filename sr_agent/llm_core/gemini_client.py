@@ -17,13 +17,20 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-# Curated flash-tier models (cheaper/simpler first) — the operator picks one in
-# the UI. A static list keeps the dropdown offline/deterministic; refresh freely.
+# Curated flash-tier models — the routine/worker tier. A static list keeps the UI
+# dropdown offline/deterministic, but it ROTS: verify against the LIVE API, never
+# against SDK doc examples.
+#
+# Verified 2026-07-15 by probing the real API with a live key (spec 018's original
+# list was built from SDK docs and was 100% wrong for a current account):
+#   gemini-2.5-flash / 2.5-flash-lite -> 404 "no longer available to new users"
+#   gemini-2.0-flash                  -> quota exceeded
+#   gemini-3.5-flash                  -> does not exist in the live model list at all
+# Note: `models.list()` is NOT proof of usability — it still lists 2.5-flash, which
+# 404s on generateContent. Only an actual generate call tells the truth.
 SIMPLE_MODELS: list[str] = [
-    "gemini-2.5-flash",
-    "gemini-2.5-flash-lite",
-    "gemini-2.0-flash",
-    "gemini-3.5-flash",
+    "gemini-3-flash-preview",   # verified working; default for routine work
+    "gemini-3.1-flash-lite",    # verified working; cheaper
 ]
 
 

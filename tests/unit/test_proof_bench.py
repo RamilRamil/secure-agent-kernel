@@ -67,14 +67,68 @@ def test_missing_fix_is_loud(tmp_path):
         load_case(d2)
 
 
-def test_valid_case_loads(tmp_path):
-    (tmp_path / "t").mkdir()
+def _curated(tmp_path, cid="c1", **over):
+    """A fully-formed case manifest incl. feature-028 curated finding fields."""
+    (tmp_path / "t").mkdir(exist_ok=True)
     fix = tmp_path / "f.patch"; fix.write_text("--- a\n+++ b\n", encoding="utf-8")
-    d = _write_case(tmp_path, "c1", target_path=str(tmp_path / "t"),
-                    report_path=str(tmp_path / "r.md"), finding_id="H-01", fix_path=str(fix))
+    fields = dict(target_path=str(tmp_path / "t"), report_path=str(tmp_path / "r.md"),
+                  finding_id="H-01", fix_path=str(fix),
+                  title="Reentrancy in withdraw", location="Vault.withdraw",
+                  description="external call before the balance write")
+    fields.update(over)
+    return _write_case(tmp_path, cid, **fields), fix
+
+
+def test_valid_case_loads(tmp_path):
+    # feature 028: a case now carries its curated finding (title/location/description)
+    d, fix = _curated(tmp_path)
     case = load_case(d)
     assert case.case_id == "c1" and case.finding_id == "H-01" and case.fix_path == fix.resolve()
-    # there is no lead-case path: every loaded case is fix-bearing (fix-less → the errors above)
+    assert case.title == "Reentrancy in withdraw" and case.location == "Vault.withdraw"
+    assert case.description == "external call before the balance write"
+
+
+def test_missing_curated_finding_is_loud(tmp_path):
+    # feature 028 FR-008: absent OR empty curated field → loud, never a silent fallback to extraction
+    for missing in ("title", "location", "description"):
+        d, _ = _curated(tmp_path, cid=f"absent-{missing}", **{missing: None})
+        # rewrite without the key entirely
+        import json as _json
+        m = _json.loads((d / "case.json").read_text()); m.pop(missing, None)
+        (d / "case.json").write_text(_json.dumps(m), encoding="utf-8")
+        with pytest.raises(ProofBenchError) as e:
+            load_case(d)
+        assert missing in str(e.value)
+    # empty string is treated as missing
+    d, _ = _curated(tmp_path, cid="empty-title", title="   ")
+    with pytest.raises(ProofBenchError):
+        load_case(d)
+
+
+def test_run_case_pins_the_finding_via_tasks_from(tmp_path, monkeypatch):
+    """feature 028 FR-009/FR-010: run_case writes a single-task file (id==finding_id, curated text)
+    and the harness argv uses --tasks-from and NOT --only. The harness subprocess is STUBBED."""
+    d, fix = _curated(tmp_path, cid="pin", finding_id="7")
+    case = load_case(d)
+    seen = {}
+
+    def _fake_run(argv, **k):
+        seen["argv"] = argv
+        # capture the task file the harness was pointed at, before run_case cleans it up
+        i = argv.index("--tasks-from")
+        seen["task_file"] = json.loads(Path(argv[i + 1]).read_text())
+        return type("R", (), {"stdout": '{"event": "task_done", "outcome": "passed_verified"}'})()
+
+    monkeypatch.setattr(pb.subprocess, "run", _fake_run)
+    cfg = _cfg(n=1)
+    pb.run_case(case, cfg, image=None, fork=False)
+
+    argv = seen["argv"]
+    assert "--tasks-from" in argv and "--only" not in argv          # pinned, not id-filtered
+    assert f"7={fix.resolve()}" in argv or f"7={fix}" in " ".join(argv)  # fix keyed on the same id
+    task = seen["task_file"]
+    assert len(task) == 1 and task[0]["id"] == "7"                  # exactly the one pinned finding
+    assert task[0]["title"] == "Reentrancy in withdraw"            # curated text, verbatim
 
 
 # ── the Jeffreys interval (US1) ───────────────────────────────────────────────

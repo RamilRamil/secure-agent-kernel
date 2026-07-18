@@ -627,6 +627,30 @@ _FIX_DIFF = ("--- a/src/A.sol\n+++ b/src/A.sol\n@@ -1,2 +1,3 @@\n"
              " contract A {\n+    uint256 public added;\n }\n")
 
 
+def test_attach_fixes_pins_both_fixes(tmp_path):
+    """Feature 028 FR-003/FR-004: `_attach_fixes` gives a pinned task the SAME two fixes an extracted
+    one gets — `fix` from the report (deterministic) and `fix_patch` from the operator map — so the
+    pinned path can't drift from the extracted one. Shared by extract_tasks and load_pinned_tasks."""
+    report = "[88] **1. Reentrancy in withdraw**\n```diff\n--- a/V.sol\n+++ b/V.sol\n@@ -1 +1 @@\n-x\n+y\n```\n"
+    raw = [{"id": "1", "title": "Reentrancy in withdraw", "location": "V.withdraw", "description": "d"}]
+    out = pqr._attach_fixes(raw, report, {"1": "OPERATOR-PATCH"})
+    assert len(out) == 1 and out[0]["id"] == "1"
+    assert out[0]["fix_patch"] == "OPERATOR-PATCH"           # operator patch attached by id
+    assert out[0]["fix"] is not None                          # report diff pulled deterministically
+    # a task with no title is dropped, exactly like extract_tasks
+    assert pqr._attach_fixes([{"id": "x"}], report, {}) == []
+
+
+def test_load_pinned_tasks_reads_file_and_attaches(tmp_path):
+    """Feature 028 FR-001/FR-002: load_pinned_tasks reads the `_extracted_tasks.json`-shaped file
+    and returns attached findings — no model call."""
+    report = tmp_path / "r.md"; report.write_text("[88] **1. T**\n", encoding="utf-8")
+    tasks = tmp_path / "tasks.json"
+    tasks.write_text('[{"id":"1","title":"T","location":"L","description":"d"}]', encoding="utf-8")
+    out = pqr.load_pinned_tasks(tasks, report, {"1": "P"})
+    assert out[0]["id"] == "1" and out[0]["title"] == "T" and out[0]["fix_patch"] == "P"
+
+
 def test_mutverify_copy_keeps_the_forge_cache():
     """Feature 027 US2 (FR-005): the falsification copy must INCLUDE the forge cache (`out`,
     `cache_forge`) so the patched rebuild is incremental, not a cold full via_ir build; it still

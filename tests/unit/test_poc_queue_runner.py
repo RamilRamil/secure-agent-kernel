@@ -627,6 +627,18 @@ _FIX_DIFF = ("--- a/src/A.sol\n+++ b/src/A.sol\n@@ -1,2 +1,3 @@\n"
              " contract A {\n+    uint256 public added;\n }\n")
 
 
+def test_mutverify_copy_keeps_the_forge_cache():
+    """Feature 027 US2 (FR-005): the falsification copy must INCLUDE the forge cache (`out`,
+    `cache_forge`) so the patched rebuild is incremental, not a cold full via_ir build; it still
+    skips the huge, irrelevant `.git`/`node_modules`. `_MUTVERIFY_COPY_SKIP` is the
+    `shutil.ignore_patterns` callable `fn(dir, names) -> set-to-ignore`."""
+    names = ["out", "cache_forge", ".git", "node_modules", "Foo.sol"]
+    ignored = pqr._MUTVERIFY_COPY_SKIP("/proj", names)
+    assert ".git" in ignored and "node_modules" in ignored      # still skipped (huge, irrelevant)
+    assert "cache_forge" not in ignored and "out" not in ignored  # the cache is now COPIED (incremental)
+    assert "Foo.sol" not in ignored                              # source files are always copied
+
+
 def test_mutation_verify_verdicts(tmp_path, monkeypatch):
     """SC-001/SC-002/FR-004: patched-run FAILS → verified; patched-run PASSES →
     unverified_pass; the real project tree is unchanged after either."""

@@ -636,14 +636,15 @@ def test_mutation_verify_verdicts(tmp_path, monkeypatch):
     events = []
 
     # patched-run FAILS → the exploit genuinely depends on the bug → verified
+    # (feature 025: mutation_verify now returns a (status, reason) tuple)
     monkeypatch.setattr(pqr, "run_tests", lambda *a, **k: _MutResult(passed=False))
-    assert pqr.mutation_verify(proj, task, "audit/poc/H_01.t.sol", object(), events.append) == "verified"
+    assert pqr.mutation_verify(proj, task, "audit/poc/H_01.t.sol", object(), events.append) == ("verified", "")
     assert events[-1]["event"] == "mutation_verified"
 
     # patched-run still PASSES → it wasn't testing the exploit → unverified_pass
     events.clear()
     monkeypatch.setattr(pqr, "run_tests", lambda *a, **k: _MutResult(passed=True))
-    assert pqr.mutation_verify(proj, task, "audit/poc/H_01.t.sol", object(), events.append) == "unverified_pass"
+    assert pqr.mutation_verify(proj, task, "audit/poc/H_01.t.sol", object(), events.append) == ("unverified_pass", "")
     assert events[-1]["event"] == "mutation_unverified"
 
     # FR-004: the real source tree is byte-for-byte unchanged (all work on a copy)
@@ -656,14 +657,14 @@ def test_mutation_verify_unavailable(tmp_path, monkeypatch):
     proj = _mut_project(tmp_path)
     events = []
 
-    # no fix
-    assert pqr.mutation_verify(proj, {"id": "H", "title": "t"}, "p.t.sol", object(), events.append) == "unavailable"
+    # no fix → ("unavailable", "no_fix")
+    assert pqr.mutation_verify(proj, {"id": "H", "title": "t"}, "p.t.sol", object(), events.append) == ("unavailable", "no_fix")
     assert events[-1]["reason"] == "no_fix"
 
-    # diff won't apply
+    # diff won't apply (real hunk header, but the file doesn't exist) → patch_failed
     bad_task = {"id": "H", "title": "t", "fix": "--- a/src/Nope.sol\n+++ b/src/Nope.sol\n@@ -1 +1,2 @@\n x\n+y\n"}
     events.clear()
-    assert pqr.mutation_verify(proj, bad_task, "p.t.sol", object(), events.append) == "unavailable"
+    assert pqr.mutation_verify(proj, bad_task, "p.t.sol", object(), events.append) == ("unavailable", "patch_failed")
     assert events[-1]["reason"] == "patch_failed"
 
     # patched source builds-fails (not "Ran N tests") → patched_no_build, not a downgrade
@@ -671,15 +672,63 @@ def test_mutation_verify_unavailable(tmp_path, monkeypatch):
     events.clear()
     monkeypatch.setattr(pqr, "run_tests", lambda *a, **k: type("R", (), {
         "passed": False, "exit_code": 1, "stdout": "Compiler run failed: Error (1): x", "stderr": ""})())
-    assert pqr.mutation_verify(proj, good_task, "p.t.sol", object(), events.append) == "unavailable"
+    assert pqr.mutation_verify(proj, good_task, "p.t.sol", object(), events.append) == ("unavailable", "patched_no_build")
     assert events[-1]["reason"] == "patched_no_build"
 
     # infra error on the re-run → unavailable(infra), never a downgrade
     events.clear()
     def _boom(*a, **k): raise RuntimeError("sandbox down")
     monkeypatch.setattr(pqr, "run_tests", _boom)
-    assert pqr.mutation_verify(proj, good_task, "p.t.sol", object(), events.append) == "unavailable"
+    assert pqr.mutation_verify(proj, good_task, "p.t.sol", object(), events.append) == ("unavailable", "infra")
     assert events[-1]["reason"] == "infra"
+
+
+def test_mutation_verify_operator_patch_precedence(tmp_path, monkeypatch):
+    """Feature 025 US2 (FR-004/FR-005): an operator `fix_patch` is used AS-IS and wins over the
+    report's `fix`. Here the operator patch applies and the report `fix` would not — proving the
+    operator's was the one taken."""
+    proj = _mut_project(tmp_path)
+    events = []
+    monkeypatch.setattr(pqr, "run_tests", lambda *a, **k: _MutResult(passed=False))
+    task = {"id": "H", "title": "t",
+            "fix": "--- a/src/Nope.sol\n+++ b/src/Nope.sol\n@@ -1 +1,2 @@\n x\n+y\n",  # would fail
+            "fix_patch": _FIX_DIFF}                                                   # real, applies
+    assert pqr.mutation_verify(proj, task, "audit/poc/H_01.t.sol", object(), events.append) == ("verified", "")
+
+
+def test_mutation_verify_operator_patch_failed(tmp_path, monkeypatch):
+    """US2 scenario 3 (FR-006): an operator patch that won't apply → ('unavailable','patch_failed'),
+    never verified, never a failure downgrade."""
+    proj = _mut_project(tmp_path)
+    events = []
+    task = {"id": "H", "title": "t",
+            "fix_patch": "--- a/src/Nope.sol\n+++ b/src/Nope.sol\n@@ -1 +1,2 @@\n x\n+y\n"}
+    assert pqr.mutation_verify(proj, task, "p.t.sol", object(), events.append) == ("unavailable", "patch_failed")
+
+
+def test_fix_patch_inside_repo_rejected(tmp_path):
+    """Feature 025 FR-015: an operator patch path INSIDE the agent repo is rejected — patches are
+    target-specific material and must live outside. External paths parse fine."""
+    import pytest
+    inside = pqr._AGENT_ROOT / "some_fix.patch"
+    with pytest.raises(SystemExit):
+        pqr._parse_fix_patches([f"H-01={inside}"])
+    # an external, existing file parses to {id: text}
+    ext = tmp_path / "ext.patch"
+    ext.write_text("--- a/x\n+++ b/x\n", encoding="utf-8")
+    assert pqr._parse_fix_patches([f"H-01={ext}"]) == {"H-01": "--- a/x\n+++ b/x\n"}
+
+
+def test_mutation_verify_reconstruction_refused(tmp_path, monkeypatch):
+    """Feature 025 US4: a report `fix` that is an ILLUSTRATION whose anchor cannot be resolved →
+    ('unavailable','reconstruction_refused'), and the refusal is logged — never a wrong 'verified'."""
+    proj = _mut_project(tmp_path)
+    events = []
+    # illustrative block (no line numbers) whose anchor `struct Ghost {` exists nowhere in src/A.sol
+    task = {"id": "H", "title": "t",
+            "fix": "--- a/src/A.sol\n+++ b/src/A.sol\n@@ struct Ghost {\n     uint a;\n+    uint b;\n }\n"}
+    assert pqr.mutation_verify(proj, task, "p.t.sol", object(), events.append) == ("unavailable", "reconstruction_refused")
+    assert any(e["event"] == "reconstruction_refused" for e in events)
 
 
 # ── Feature 011: scaffold synthesis ────────────────────────────────────────

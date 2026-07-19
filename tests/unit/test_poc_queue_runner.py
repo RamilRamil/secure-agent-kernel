@@ -829,6 +829,26 @@ def test_synthesize_scaffold_accepts_compiling(tmp_path, monkeypatch):
     assert events[-1]["event"] == "scaffold_synthesized"
 
 
+def test_synthesize_smoke_uses_relative_import(tmp_path, monkeypatch):
+    """Regression: the compile-validation smoke test must import the synth base with a
+    `./`-relative path. A bare `_synth/…` import resolves against the project base-path
+    (`/work`), not the smoke file's dir, so solc 404'd it and synthesis always failed
+    `no_build` (seen live on strata finding-1). run_tests is stubbed, so capture the smoke
+    file's text at call time (it is unlinked in the finally)."""
+    proj = _synth_project(tmp_path)
+    captured = {}
+    def _capture_run_tests(project, *a, **k):
+        captured["smoke"] = (project / "audit" / "poc" / "_synth_smoke.t.sol").read_text()
+        return _COMPILE_OK
+    monkeypatch.setattr(pqr, "run_tests", _capture_run_tests)
+    pqr.synthesize_scaffold(
+        proj, {"id": "H-01", "title": "t", "location": "Foo", "description": "d"},
+        ["Foo"], "abstract contract ExistingBase {}", None,
+        _FakeGenClient(_SYNTH_BASE_CODE), object(), [].append)
+    assert 'from "./_synth/SynthBase_H_01.sol"' in captured["smoke"]  # ./-relative, resolvable
+    assert 'from "_synth/' not in captured["smoke"]                    # never the bare form
+
+
 def test_synthesize_writes_only_audit_area(tmp_path, monkeypatch):
     """FR-006/SC-004: tracked source is unchanged; the smoke test is cleaned up; a
     rejected base is removed."""

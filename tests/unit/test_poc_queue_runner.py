@@ -651,6 +651,22 @@ def test_load_pinned_tasks_reads_file_and_attaches(tmp_path):
     assert out[0]["id"] == "1" and out[0]["title"] == "T" and out[0]["fix_patch"] == "P"
 
 
+def test_dep_mounts_grafts_node_modules_readonly_into_the_container(tmp_path):
+    """Feature 027 follow-up: the mutation-verify copy skips node_modules (650MB), so the patched
+    build resolves `@openzeppelin/...` imports only if the ORIGINAL deps are MOUNTED read-only into
+    the container at `/work/node_modules`. A copy-side host-path symlink dangles inside the container
+    (it sees only the mount, not the host path), which is why strata-4 stayed `patched_no_build`."""
+    proj = tmp_path / "proj"; (proj / "node_modules" / "@x").mkdir(parents=True)
+    mounts = pqr._dep_mounts(proj)
+    assert len(mounts) == 1
+    m = mounts[0]
+    assert m.host_path == proj / "node_modules"      # the ORIGINAL, not a copy
+    assert m.container_path == "/work/node_modules"   # where foundry.toml `libs` expects it
+    assert m.read_only is True                        # deps are never mutated by the fix
+    # safe when the dep dir is absent → no mount
+    assert pqr._dep_mounts(tmp_path / "nope") == []
+
+
 def test_mutverify_copy_keeps_the_forge_cache():
     """Feature 027 US2 (FR-005): the falsification copy must INCLUDE the forge cache (`out`,
     `cache_forge`) so the patched rebuild is incremental, not a cold full via_ir build; it still

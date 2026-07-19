@@ -72,6 +72,18 @@ class OpenRouterClient:
         try:
             with urllib.request.urlopen(req, timeout=self.timeout_s) as r:
                 data = json.loads(r.read())
-            return data["choices"][0]["message"]["content"] or ""
+            # OpenRouter can return HTTP 200 with an error body (provider-side rate limit,
+            # moderation, upstream fault) and NO `choices` — surface its real message instead
+            # of a cryptic `KeyError: 'choices'` so the operator can tell rate-limit from bug.
+            if "choices" not in data:
+                err = data.get("error")
+                msg = (err.get("message") if isinstance(err, dict) else err) or str(data)[:300]
+                raise OpenRouterUnavailable(f"OpenRouter returned no choices: {msg}")
+            message = (data["choices"][0] or {}).get("message", {})
+            # Reasoning models (e.g. nemotron) may leave `content` empty and put text under
+            # `reasoning`/`reasoning_content` — fall back to those before giving up.
+            return (message.get("content")
+                    or message.get("reasoning")
+                    or message.get("reasoning_content") or "")
         except (urllib.error.URLError, OSError, ValueError, KeyError, IndexError) as e:
             raise OpenRouterUnavailable(f"OpenRouter generate failed: {e}") from e

@@ -491,6 +491,28 @@ def test_fix_import_paths_repairs_bare_spdx(tmp_path):
     assert "pragma solidity ^0.8.28;" in fixed  # untouched
 
 
+def test_fix_import_paths_base_dir_corrects_synth_depth(tmp_path):
+    """The scaffold-synthesis base lives a level deeper (audit/poc/_synth/) than a drafted PoC
+    (audit/poc/), so a model-written import is off by one `../`. Passing `base_dir=synth_dir`
+    rewrites it to the right depth (GLM-5.2 live: the sole synth failure was this off-by-one).
+    Invented names only — no target material."""
+    base = tmp_path / "test" / "poc" / "base"
+    base.mkdir(parents=True)
+    (base / "DemoBase.sol").write_text("pragma solidity ^0.8.28;\ncontract DemoBase {}", encoding="utf-8")
+    # depth correct for audit/poc/ (2 levels), but the synth file sits at audit/poc/_synth/ (3 levels)
+    code = ('pragma solidity ^0.8.28;\n'
+            'import { DemoBase } from "../../test/poc/base/DemoBase.sol";\n'
+            'contract SynthBase is DemoBase {}')
+    synth_dir = tmp_path / "audit" / "poc" / "_synth"
+    fixed, changed = pqr._fix_import_paths(code, tmp_path, base_dir=synth_dir)
+    assert changed is True
+    assert 'from "../../../test/poc/base/DemoBase.sol"' in fixed   # up 3, resolves from _synth/
+    assert '"../../test/poc/base/DemoBase.sol"' not in fixed        # the off-by-one is gone
+    # default base (audit/poc/) leaves the already-correct depth-2 path untouched
+    same, ch2 = pqr._fix_import_paths(code, tmp_path)
+    assert 'from "../../test/poc/base/DemoBase.sol"' in same and ch2 is False
+
+
 def test_revert_hints_quotes_fail_and_finding():
     """FR-005: `revert_hints` (compiled-but-reverted feedback) quotes forge's real
     [FAIL...] line plus the finding text, and returns '' when there is no FAIL."""

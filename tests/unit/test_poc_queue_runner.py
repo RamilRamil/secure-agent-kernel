@@ -1151,6 +1151,38 @@ def test_synth_accepts_first_build_zero_repairs(tmp_path, monkeypatch):
     assert not any(e["event"] == "scaffold_repair" for e in events)
 
 
+# ── Observability + retry (timestamps, model retry) ───────────────────────
+
+def test_stamp_adds_ts():
+    """Every log event is prefixed with a wall-clock `ts` so per-stage durations are recoverable."""
+    e = pqr._stamp({"event": "tested", "attempt": 1})
+    assert e["event"] == "tested" and e["attempt"] == 1 and isinstance(e["ts"], float)
+
+
+def test_call_with_retry_retries_and_logs():
+    """A transient model failure is retried and a `model_retry` event is logged; the successful
+    value is returned."""
+    calls = {"n": 0}
+    def fn():
+        calls["n"] += 1
+        if calls["n"] < 2:
+            raise pqr.OpenRouterUnavailable("read timed out")
+        return "ok"
+    events = []
+    assert pqr._call_with_retry(fn, log=events.append, stage="draft", fid="X") == "ok"
+    assert calls["n"] == 2
+    assert [e["event"] for e in events] == ["model_retry"] and events[0]["stage"] == "draft"
+
+
+def test_call_with_retry_reraises_after_exhausting():
+    """After `attempts` transient failures the last error is re-raised (an honest give-up)."""
+    import pytest
+    def fn():
+        raise pqr.OpenRouterUnavailable("boom")
+    with pytest.raises(pqr.OpenRouterUnavailable):
+        pqr._call_with_retry(fn, log=[].append, stage="fix", fid="X", attempts=2)
+
+
 def test_resolve_prompt_fallback_when_disabled():
     """FR-002/SC-001: tracing off → the byte-exact constant + version None."""
     from sr_agent.eval.tracer import NOOP_TRACER

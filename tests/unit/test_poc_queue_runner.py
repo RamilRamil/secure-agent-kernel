@@ -1017,6 +1017,140 @@ class _FakeVersionedTracer:
         return self._text, self._version
 
 
+# ── Feature 031: harden scaffold synthesis (deterministic repair pass + 9553) ──
+# Invented names only — no target material.
+
+def _forge_9553(typ, path, line):
+    """A no-build forge result whose 9553 error names `typ` and points at `line` (real format)."""
+    stdout = ("Compiler run failed:\n"
+              "Error (9553): Invalid type for argument in function call. "
+              f"Invalid implicit conversion from address to contract {typ} requested.\n"
+              f"  --> {path}:{line}:9:\n")
+    return type("R", (), {"passed": False, "exit_code": 1, "stdout": stdout, "stderr": ""})()
+
+
+def test_fix_address_interface_wraps_flagged_line():
+    """FR-004: `_fix_address_interface` wraps the 9553-flagged argument as `IThing(address(x))` on the
+    exact line, edits only that line, and is idempotent."""
+    code = ("// SPDX-License-Identifier: MIT\n"          # 1
+            "pragma solidity ^0.8.28;\n"                  # 2
+            "abstract contract SynthBase_X {\n"           # 3
+            "    function s() internal {\n"               # 4
+            "        reg.configure(address(thing));\n"    # 5  <- flagged
+            "        other.keep(address(y));\n"           # 6  <- NOT flagged
+            "    }\n}\n")                                  # 7-8
+    forge = _forge_9553("IThing", "audit/poc/_synth/SynthBase_X.sol", 5).stdout
+    fixed, changed = pqr._fix_address_interface(code, forge)
+    assert changed is True
+    assert "reg.configure(IThing(address(thing)));" in fixed          # flagged line wrapped
+    assert "other.keep(address(y));" in fixed                          # unflagged line untouched
+    fixed2, changed2 = pqr._fix_address_interface(fixed, forge)        # idempotent
+    assert changed2 is False and fixed2 == fixed
+
+
+def test_fix_address_interface_noop_without_9553():
+    """FR-005: no 9553 in the forge output → the code is returned unchanged."""
+    code = "contract C { function f() public { g(address(x)); } }"
+    fixed, changed = pqr._fix_address_interface(code, "Compiler run failed:\nError (7576): Undeclared.")
+    assert changed is False and fixed == code
+
+
+def test_targeted_hints_9553_rule():
+    """FR-004/FR-005: `_targeted_hints` emits the address→interface hint when the 9553 error is present,
+    and stays silent otherwise (shared benefit for the drafting PoC)."""
+    with_err = pqr._targeted_hints(
+        "Invalid implicit conversion from address to contract IThing requested", "", "")
+    assert "IThing(address(" in with_err
+    without = pqr._targeted_hints("Error (7576): Undeclared identifier.", "", "")
+    assert "address(" not in without
+
+
+class _CountingSynthClient:
+    def __init__(self, text): self._text, self.calls = text, 0
+    def generate(self, prompt, options=None): self.calls += 1; return self._text
+
+
+_SYNTH_TASK = {"id": "X", "title": "t", "location": "Foo", "description": "d"}
+# a synth base with an address→interface bug on line 5 (contract name on line 3)
+_SYNTH_BAD = ("// SPDX-License-Identifier: MIT\n"          # 1
+              "pragma solidity ^0.8.28;\n"                  # 2
+              "abstract contract SynthBase_X {\n"           # 3
+              "    function s() internal {\n"               # 4
+              "        reg.configure(address(thing));\n"    # 5
+              "    }\n}\n")                                  # 6-7
+
+
+def test_synth_repair_accepts_after_deterministic_fix(tmp_path, monkeypatch):
+    """SC-001/SC-005: a base that fails 9553 then compiles after the deterministic fix is ACCEPTED,
+    and the repair makes NO extra model call (client.generate called exactly once — the generation)."""
+    (tmp_path / "audit" / "poc").mkdir(parents=True)
+    results = [_forge_9553("IThing", "audit/poc/_synth/SynthBase_X.sol", 5), _COMPILE_OK]
+    monkeypatch.setattr(pqr, "run_tests", lambda *a, **k: results.pop(0))
+    client = _CountingSynthClient(_SYNTH_BAD)
+    events = []
+    path = pqr.synthesize_scaffold(tmp_path, _SYNTH_TASK, ["Foo"], "", None, client, object(), events.append)
+    assert path is not None and path.exists()
+    assert client.calls == 1                                       # no extra model call in the repair
+    assert any(e["event"] == "scaffold_repair" for e in events)
+    assert events[-1]["event"] == "scaffold_synthesized" and events[-1]["repair_rounds"] == 1
+    assert "IThing(address(thing))" in path.read_text()            # the fix persisted to the base
+
+
+def test_synth_repair_early_stops_on_no_fix(tmp_path, monkeypatch):
+    """FR-007 / A2 case (c): a non-deterministically-fixable error (no 9553/import fix applies) → the
+    pass STOPS after ONE build (no redundant recompile) and rejects."""
+    (tmp_path / "audit" / "poc").mkdir(parents=True)
+    calls = {"n": 0}
+    def _rt(*a, **k):
+        calls["n"] += 1
+        return _COMPILE_FAIL                                       # 7576, nothing deterministic to fix
+    monkeypatch.setattr(pqr, "run_tests", _rt)
+    events = []
+    path = pqr.synthesize_scaffold(tmp_path, _SYNTH_TASK, ["Foo"], "", None,
+                                   _CountingSynthClient(_SYNTH_BAD), object(), events.append)
+    assert path is None
+    assert calls["n"] == 1                                         # early stop — not SYNTH_REPAIR_ROUNDS
+    assert events[-1]["event"] == "scaffold_synthesis_failed"
+
+
+def test_synth_repair_bounded_by_rounds(tmp_path, monkeypatch):
+    """SC-002 / A2 case (a): a base fixable each round but never compiling runs AT MOST
+    SYNTH_REPAIR_ROUNDS builds, then rejects — the bound holds."""
+    (tmp_path / "audit" / "poc").mkdir(parents=True)
+    # a base with a distinct wrappable line per round, so each round changes the code and continues
+    lines = ["// SPDX-License-Identifier: MIT", "pragma solidity ^0.8.28;", "abstract contract SynthBase_X {",
+             "    function s() internal {"]
+    for i in range(pqr.SYNTH_REPAIR_ROUNDS):
+        lines.append(f"        r{i}.cfg(address(p{i}));")          # lines 5, 6, 7, …
+    lines += ["    }", "}"]
+    base = "\n".join(lines) + "\n"
+    p = "audit/poc/_synth/SynthBase_X.sol"
+    results = [_forge_9553("IThing", p, 5 + i) for i in range(pqr.SYNTH_REPAIR_ROUNDS)]
+    calls = {"n": 0}
+    def _rt(*a, **k):
+        calls["n"] += 1
+        return results.pop(0)
+    monkeypatch.setattr(pqr, "run_tests", _rt)
+    events = []
+    path = pqr.synthesize_scaffold(tmp_path, _SYNTH_TASK, ["Foo"], "", None,
+                                   _CountingSynthClient(base), object(), events.append)
+    assert path is None
+    assert calls["n"] == pqr.SYNTH_REPAIR_ROUNDS                   # ran the full bound, no more
+    assert events[-1]["event"] == "scaffold_synthesis_failed"
+
+
+def test_synth_accepts_first_build_zero_repairs(tmp_path, monkeypatch):
+    """SC-003: a base that compiles on the FIRST smoke build is accepted with zero repair rounds."""
+    (tmp_path / "audit" / "poc").mkdir(parents=True)
+    monkeypatch.setattr(pqr, "run_tests", lambda *a, **k: _COMPILE_OK)
+    events = []
+    path = pqr.synthesize_scaffold(tmp_path, _SYNTH_TASK, ["Foo"], "", None,
+                                   _CountingSynthClient(_SYNTH_BAD), object(), events.append)
+    assert path is not None
+    assert events[-1]["event"] == "scaffold_synthesized" and events[-1]["repair_rounds"] == 0
+    assert not any(e["event"] == "scaffold_repair" for e in events)
+
+
 def test_resolve_prompt_fallback_when_disabled():
     """FR-002/SC-001: tracing off → the byte-exact constant + version None."""
     from sr_agent.eval.tracer import NOOP_TRACER

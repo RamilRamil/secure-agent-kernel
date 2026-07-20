@@ -62,6 +62,18 @@ def test_run_tests_invokes_sandbox(tmp_path):
     assert fake.calls[0]["workdir"] == "/work"
 
 
+def test_run_tests_trace_opt_in_adds_vvv(tmp_path):
+    """Feature 029: `trace=True` appends `-vvv` (call traces for FAILING tests) so a
+    compiled-but-inert PoC's revert path reaches the repair feedback; default OFF keeps the
+    command byte-identical for mutation_verify and the scaffold smoke (FR-001/FR-010)."""
+    fake = _FakeSandbox(SandboxResult(exit_code=1, stdout="", stderr=""))
+    run_tests(tmp_path, fake, test_path="PoC.t.sol", trace=True)
+    assert fake.calls[0]["command"] == ["forge test --offline -vvv --match-path PoC.t.sol"]
+    fake2 = _FakeSandbox(SandboxResult(exit_code=1, stdout="", stderr=""))
+    run_tests(tmp_path, fake2, test_path="PoC.t.sol")                     # default: no trace
+    assert "-vvv" not in fake2.calls[0]["command"][0]
+
+
 def test_run_tests_reports_failure(tmp_path):
     fake = _FakeSandbox(SandboxResult(exit_code=1, stdout="", stderr="boom"))
     res = run_tests(tmp_path, fake)

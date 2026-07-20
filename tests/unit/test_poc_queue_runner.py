@@ -522,6 +522,96 @@ def test_revert_hints_quotes_fail_and_finding():
     assert pqr.revert_hints("Ran 1 test\n[PASS] testX()", "", task) == ""
 
 
+# ── Feature 029: trace-grounded exploit-logic feedback ─────────────────────
+# A SYNTHETIC forge -vvv fixture in the REAL forge format (captured from a live -vvv run, then
+# renamed to invented placeholders — no target material). -vvv traces only FAILING tests: the
+# passing test below has NO Traces block, exactly as forge emits.
+_VVV_FIXTURE = """\
+Ran 2 tests for test/Exploit.t.sol:ExploitTest
+[FAIL: gate blocks the caller] testExploit() (gas: 8772)
+Traces:
+  [8772] ExploitTest::testExploit()
+    ├─ [2453] DemoVault::probe() [staticcall]
+    │   └─ ← [Return] 1
+    ├─ [549] DemoVault::gate() [staticcall]
+    │   └─ ← [Revert] gate blocks the caller
+    └─ ← [Revert] gate blocks the caller
+
+Backtrace:
+  at DemoVault.gate
+  at ExploitTest.testExploit
+
+[PASS] testSetup() (gas: 7746)
+Suite result: FAILED. 1 passed; 1 failed; 0 skipped; finished in 14.61ms
+"""
+
+
+def test_trace_excerpt_keeps_failing_region_drops_passing():
+    """FR-004 / US1 scenario 2: `_trace_excerpt` returns the failing test's [FAIL] header + its
+    Traces/Backtrace, and NOT the passing test or the run summary."""
+    out = pqr._trace_excerpt(_VVV_FIXTURE)
+    assert "[FAIL: gate blocks the caller]" in out
+    assert "Traces:" in out and "DemoVault::gate()" in out and "← [Revert]" in out
+    assert "Backtrace:" in out and "at DemoVault.gate" in out
+    assert "[PASS] testSetup()" not in out          # passing test excluded
+    assert "Suite result:" not in out               # summary excluded
+
+
+def test_trace_excerpt_empty_without_trace():
+    """FR-007 seed: a [FAIL] line WITHOUT a Traces block (default verbosity) → "", and the
+    bottom-of-output 'Failing tests:' summary (also traceless) never leaks in."""
+    default_verbosity = ("Ran 1 test\n[FAIL: gate blocks the caller] testExploit() (gas: 8772)\n"
+                         "Suite result: FAILED. 0 passed; 1 failed; 0 skipped\n"
+                         "Failing tests:\n[FAIL: gate blocks the caller] testExploit() (gas: 8772)")
+    assert pqr._trace_excerpt(default_verbosity) == ""
+    assert pqr._trace_excerpt("Ran 1 test\n[PASS] testSetup() (gas: 1)") == ""
+
+
+def test_trace_excerpt_bounds_to_budget_keeps_revert():
+    """SC-002 / FR-004: an over-budget trace is trimmed to <= budget and still shows the revert-side
+    tail (the Backtrace / ← [Revert] where the exploit diverged)."""
+    big = _VVV_FIXTURE.replace(
+        "    ├─ [2453] DemoVault::probe() [staticcall]\n",
+        "".join(f"    ├─ [{i}] DemoVault::step{i}() [staticcall]\n"
+                f"    │   └─ ← [Return] {i}\n" for i in range(400)))
+    out = pqr._trace_excerpt(big, budget=400)
+    assert len(out) <= 400
+    assert "[FAIL: gate blocks the caller]" in out   # header retained
+    assert "← [Revert]" in out or "Backtrace" in out  # revert region retained
+
+
+def test_revert_hints_folds_trace_and_keeps_prior_shape():
+    """FR-002/FR-003/FR-007/SC-005: revert_hints includes the trace excerpt + finding text when a
+    trace is present; is byte-identical to the pre-029 output when absent; and renders an
+    authoritative setup-revert fix (missing approve) BEFORE the trace."""
+    task = {"title": "Padding self-selects tier", "description": "probe() then gate()"}
+    with_trace = pqr.revert_hints(_VVV_FIXTURE, "", task)
+    assert "EXECUTION TRACE" in with_trace and "DemoVault::gate()" in with_trace
+    assert "Padding self-selects tier" in with_trace and "EXPLOIT-LOGIC" in with_trace
+
+    # No trace → byte-identical to the legacy path (compute the legacy string directly).
+    fail_only = "Ran 1 test\n[FAIL: gate blocks the caller] testExploit() (gas: 1)"
+    legacy = (
+        "The test compiled and ran, but did NOT pass — this is an EXPLOIT-LOGIC problem, "
+        "not a compile error:\n" + "[FAIL: gate blocks the caller] testExploit() (gas: 1)"[:800] +
+        f"\n\nRe-read the finding and fix the SEQUENCE/PRECONDITIONS, not just syntax:\n"
+        f"Title: {task['title']}\nDescription: {task['description']}\n"
+        "Common causes: wrong order of calls, a precondition never actually set up "
+        "(e.g. a required state/role/balance not established before the exploit step), "
+        "asserting the wrong condition, or expecting a revert that the real code doesn't "
+        "produce at that call (check which call in the sequence should actually revert).")
+    out_no_trace = pqr.revert_hints(fail_only, "", task)
+    assert "EXECUTION TRACE" not in out_no_trace
+    assert out_no_trace == legacy                   # SC-005 byte-identical
+
+    # Setup-revert fix (missing approve) FIRST, ahead of the trace (FR-003).
+    with_approve = _VVV_FIXTURE.replace(
+        "← [Revert] gate blocks the caller",
+        "← [Revert] ERC20InsufficientAllowance(0xABCD, 0, 100)", 1)
+    both = pqr.revert_hints(with_approve, "", task)
+    assert both.index("approve") < both.index("EXECUTION TRACE")
+
+
 # ── Feature 009 US3: scaffold sufficiency understands inheritance ──────────
 
 def test_scaffold_missing_types_sees_inherited_var(tmp_path):

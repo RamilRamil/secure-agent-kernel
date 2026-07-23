@@ -11,6 +11,7 @@ proves each function equals the REAL loop's inline output; it is removed in comm
 from __future__ import annotations
 
 import scripts.poc_queue_runner as pqr
+import scripts.solidity_fixers as sf
 
 # A bare SPDX line (missing its `//`) — `_fix_import_paths` repairs it independently of
 # base_dir, so it deterministically pins that import_paths RAN in a sequence.
@@ -65,12 +66,12 @@ def test_fix_import_paths_picks_shallowest_of_same_named(tmp_path):
     poc_dir.mkdir(parents=True)
     code = ('// SPDX-License-Identifier: MIT\npragma solidity ^0.8.28;\n'
             'import { IFoo } from "./IFoo.sol";\ncontract PoC {}')
-    out, changed = pqr._fix_import_paths(code, tmp_path)
+    out, changed = sf._fix_import_paths(code, tmp_path)
     assert changed
     assert 'from "../../src/IFoo.sol"' in out          # the shallow real one, deterministically
     assert "test/mocks" not in out                      # never the deeper mock
     # stable across repeated runs (no scandir-order dependence)
-    assert pqr._fix_import_paths(code, tmp_path)[0] == out
+    assert sf._fix_import_paths(code, tmp_path)[0] == out
 
 
 def test_seq_synth_prewrite_noop_returns_empty(tmp_path):
@@ -146,3 +147,19 @@ def test_seq_postmodel_guard_false_skips_setup_override(tmp_path):
             "    function test_x() public {}\n}\n")
     _out, applied = pqr._seq_postmodel(code, tmp_path, None, "", _SCAFFOLD, guard=False)
     assert "setup_override" not in applied
+
+
+# ── E1 (feature 033 follow-up): _tracked_sol surfaces a git failure ───────────
+def test_tracked_sol_warns_on_git_failure(tmp_path, monkeypatch, caplog):
+    """A git failure used to silently disable the tracked-source preference. Now it logs a
+    warning (behavior still degrades to an empty set — visible, not silent)."""
+    import logging
+    import scripts.solidity_utils as su
+
+    def _boom(*a, **k):
+        raise OSError("git not found")
+    monkeypatch.setattr(su.subprocess, "run", _boom)
+    with caplog.at_level(logging.WARNING, logger="scripts.solidity_utils"):
+        out = su._tracked_sol(tmp_path)
+    assert out == set()
+    assert any("tracked-source preference disabled" in r.message for r in caplog.records)

@@ -5,8 +5,8 @@ inherited the imported grandparent (`FooDeploy`) instead of the leaf (`FooTest`)
 setUp + every deployed symbol → a cascade of `Undeclared identifier`. `_scaffold_base_name`
 identifies the leaf; `_fix_scaffold_base` deterministically enforces it.
 """
-from scripts.poc_queue_runner import (_fix_scaffold_base, _scaffold_base_name,
-                                       read_scaffold)
+from scripts.poc_queue_runner import _scaffold_base_name, read_scaffold
+from scripts.solidity_fixers import _fix_scaffold_base
 
 _SCAFFOLD = (
     'import {FooDeploy} from "./FooDeploy.t.sol";\n'

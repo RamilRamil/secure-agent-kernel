@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 import scripts.poc_queue_runner as pqr
+import scripts.solidity_fixers as sf
 from scripts.solidity_index import SymbolIndex
 
 FIRST_SRC = """
@@ -470,14 +471,14 @@ def test_fix_setup_override_strips_and_reinjects():
             "    }\n"
             "    function test_x() public { assertTrue(true); }\n"
             "}")
-    fixed, changed = pqr._fix_setup_override(code)
+    fixed, changed = sf._fix_setup_override(code)
     assert changed is True
     assert "function setUp" not in fixed
     assert "deal(USDE" in fixed  # statement re-injected into the test body
     assert "super.setUp" not in fixed  # the base-call line is dropped
     # a PoC with no own setUp is left untouched
     clean = "contract PoC is Base { function test_x() public { assertTrue(true); } }"
-    _, changed2 = pqr._fix_setup_override(clean)
+    _, changed2 = sf._fix_setup_override(clean)
     assert changed2 is False
 
 
@@ -485,7 +486,7 @@ def test_fix_import_paths_repairs_bare_spdx(tmp_path):
     """FR-005: `_fix_import_paths` restores a bare SPDX line's `//` (a 2314 syntax
     error) line-by-line without touching other lines."""
     code = "SPDX-License-Identifier: MIT\npragma solidity ^0.8.28;\ncontract PoC {}"
-    fixed, changed = pqr._fix_import_paths(code, tmp_path)
+    fixed, changed = sf._fix_import_paths(code, tmp_path)
     assert changed is True
     assert fixed.startswith("// SPDX-License-Identifier: MIT")
     assert "pragma solidity ^0.8.28;" in fixed  # untouched
@@ -504,12 +505,12 @@ def test_fix_import_paths_base_dir_corrects_synth_depth(tmp_path):
             'import { DemoBase } from "../../test/poc/base/DemoBase.sol";\n'
             'contract SynthBase is DemoBase {}')
     synth_dir = tmp_path / "audit" / "poc" / "_synth"
-    fixed, changed = pqr._fix_import_paths(code, tmp_path, base_dir=synth_dir)
+    fixed, changed = sf._fix_import_paths(code, tmp_path, base_dir=synth_dir)
     assert changed is True
     assert 'from "../../../test/poc/base/DemoBase.sol"' in fixed   # up 3, resolves from _synth/
     assert '"../../test/poc/base/DemoBase.sol"' not in fixed        # the off-by-one is gone
     # default base (audit/poc/) leaves the already-correct depth-2 path untouched
-    same, ch2 = pqr._fix_import_paths(code, tmp_path)
+    same, ch2 = sf._fix_import_paths(code, tmp_path)
     assert 'from "../../test/poc/base/DemoBase.sol"' in same and ch2 is False
 
 
@@ -1065,18 +1066,18 @@ def test_fix_address_interface_wraps_flagged_line():
             "        other.keep(address(y));\n"           # 6  <- NOT flagged
             "    }\n}\n")                                  # 7-8
     forge = _forge_9553("IThing", "audit/poc/_synth/SynthBase_X.sol", 5).stdout
-    fixed, changed = pqr._fix_address_interface(code, forge)
+    fixed, changed = sf._fix_address_interface(code, forge)
     assert changed is True
     assert "reg.configure(IThing(address(thing)));" in fixed          # flagged line wrapped
     assert "other.keep(address(y));" in fixed                          # unflagged line untouched
-    fixed2, changed2 = pqr._fix_address_interface(fixed, forge)        # idempotent
+    fixed2, changed2 = sf._fix_address_interface(fixed, forge)        # idempotent
     assert changed2 is False and fixed2 == fixed
 
 
 def test_fix_address_interface_noop_without_9553():
     """FR-005: no 9553 in the forge output → the code is returned unchanged."""
     code = "contract C { function f() public { g(address(x)); } }"
-    fixed, changed = pqr._fix_address_interface(code, "Compiler run failed:\nError (7576): Undeclared.")
+    fixed, changed = sf._fix_address_interface(code, "Compiler run failed:\nError (7576): Undeclared.")
     assert changed is False and fixed == code
 
 
@@ -1227,21 +1228,21 @@ _UND_CODE = ("// SPDX-License-Identifier: MIT\npragma solidity ^0.8.28;\n"
 
 def test_fix_undeclared_import_adds_known_symbol():
     """FR-001: an undeclared name the file-map resolves is auto-imported with its real path."""
-    out, ch = pqr._fix_undeclared_import(_UND_CODE, _undeclared_block("Widget"),
+    out, ch = sf._fix_undeclared_import(_UND_CODE, _undeclared_block("Widget"),
                                          "Widget: contracts/Widget.sol")
     assert ch is True and 'import { Widget } from "contracts/Widget.sol";' in out
 
 
 def test_fix_undeclared_import_handles_7920_wording():
     """FR-001: the 7920 'Identifier not found' wording also triggers the import."""
-    out, ch = pqr._fix_undeclared_import(_UND_CODE, _undeclared_block("Widget", "7920"),
+    out, ch = sf._fix_undeclared_import(_UND_CODE, _undeclared_block("Widget", "7920"),
                                          "Widget: contracts/Widget.sol")
     assert ch is True and "import { Widget }" in out
 
 
 def test_fix_undeclared_import_skips_unknown_anti_invention():
     """FR-003: a name the file-map does NOT resolve is NEVER imported (anti-invention)."""
-    out, ch = pqr._fix_undeclared_import(_UND_CODE, _undeclared_block("Widget"),
+    out, ch = sf._fix_undeclared_import(_UND_CODE, _undeclared_block("Widget"),
                                          "Other: contracts/Other.sol")
     assert ch is False and out == _UND_CODE
 
@@ -1249,21 +1250,21 @@ def test_fix_undeclared_import_skips_unknown_anti_invention():
 def test_fix_undeclared_import_mix_known_and_unknown():
     """FR-001/FR-003: only the known name is imported; the unknown is left for the model."""
     forge = _undeclared_block("Widget") + _undeclared_block("Bogus")
-    out, ch = pqr._fix_undeclared_import(_UND_CODE, forge, "Widget: contracts/Widget.sol")
+    out, ch = sf._fix_undeclared_import(_UND_CODE, forge, "Widget: contracts/Widget.sol")
     assert ch is True and "import { Widget }" in out and "import { Bogus }" not in out
 
 
 def test_fix_undeclared_import_idempotent():
     """FR-002: a name already imported is not re-added."""
     fm = "Widget: contracts/Widget.sol"
-    out, _ = pqr._fix_undeclared_import(_UND_CODE, _undeclared_block("Widget"), fm)
-    out2, ch2 = pqr._fix_undeclared_import(out, _undeclared_block("Widget"), fm)
+    out, _ = sf._fix_undeclared_import(_UND_CODE, _undeclared_block("Widget"), fm)
+    out2, ch2 = sf._fix_undeclared_import(out, _undeclared_block("Widget"), fm)
     assert ch2 is False and out2 == out
 
 
 def test_fix_undeclared_import_noop_without_file_map():
     """FR-007: no file-map (no index) → the transform is a no-op (never an error)."""
-    out, ch = pqr._fix_undeclared_import(_UND_CODE, _undeclared_block("Widget"), "")
+    out, ch = sf._fix_undeclared_import(_UND_CODE, _undeclared_block("Widget"), "")
     assert ch is False and out == _UND_CODE
 
 

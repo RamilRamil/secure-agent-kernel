@@ -1183,6 +1183,65 @@ def test_call_with_retry_reraises_after_exhausting():
         pqr._call_with_retry(fn, log=[].append, stage="fix", fid="X", attempts=2)
 
 
+# ── Feature 032: deterministic compile-fixers (auto-import undeclared) ──────
+# Invented names only — no target material.
+
+def _undeclared_block(name, code="7576"):
+    """A SYNTHETIC forge 7576/7920 block with `name` under the caret (real forge shape)."""
+    prefix = "        uint256 z = "
+    src = prefix + name + ";"
+    col = len(prefix)
+    msg = "Undeclared identifier." if code == "7576" else "Identifier not found or not unique."
+    return (f"Error ({code}): {msg}\n  --> audit/poc/p.t.sol:9:{col+1}:\n   |\n"
+            f"9 | {src}\n  | {' ' * col}{'^' * len(name)}\n")
+
+
+_UND_CODE = ("// SPDX-License-Identifier: MIT\npragma solidity ^0.8.28;\n"
+             "contract PoC { function t() public { uint256 z = Widget; } }")
+
+
+def test_fix_undeclared_import_adds_known_symbol():
+    """FR-001: an undeclared name the file-map resolves is auto-imported with its real path."""
+    out, ch = pqr._fix_undeclared_import(_UND_CODE, _undeclared_block("Widget"), None,
+                                         "Widget: contracts/Widget.sol")
+    assert ch is True and 'import { Widget } from "contracts/Widget.sol";' in out
+
+
+def test_fix_undeclared_import_handles_7920_wording():
+    """FR-001: the 7920 'Identifier not found' wording also triggers the import."""
+    out, ch = pqr._fix_undeclared_import(_UND_CODE, _undeclared_block("Widget", "7920"), None,
+                                         "Widget: contracts/Widget.sol")
+    assert ch is True and "import { Widget }" in out
+
+
+def test_fix_undeclared_import_skips_unknown_anti_invention():
+    """FR-003: a name the file-map does NOT resolve is NEVER imported (anti-invention)."""
+    out, ch = pqr._fix_undeclared_import(_UND_CODE, _undeclared_block("Widget"), None,
+                                         "Other: contracts/Other.sol")
+    assert ch is False and out == _UND_CODE
+
+
+def test_fix_undeclared_import_mix_known_and_unknown():
+    """FR-001/FR-003: only the known name is imported; the unknown is left for the model."""
+    forge = _undeclared_block("Widget") + _undeclared_block("Bogus")
+    out, ch = pqr._fix_undeclared_import(_UND_CODE, forge, None, "Widget: contracts/Widget.sol")
+    assert ch is True and "import { Widget }" in out and "import { Bogus }" not in out
+
+
+def test_fix_undeclared_import_idempotent():
+    """FR-002: a name already imported is not re-added."""
+    fm = "Widget: contracts/Widget.sol"
+    out, _ = pqr._fix_undeclared_import(_UND_CODE, _undeclared_block("Widget"), None, fm)
+    out2, ch2 = pqr._fix_undeclared_import(out, _undeclared_block("Widget"), None, fm)
+    assert ch2 is False and out2 == out
+
+
+def test_fix_undeclared_import_noop_without_file_map():
+    """FR-007: no file-map (no index) → the transform is a no-op (never an error)."""
+    out, ch = pqr._fix_undeclared_import(_UND_CODE, _undeclared_block("Widget"), None, "")
+    assert ch is False and out == _UND_CODE
+
+
 def test_resolve_prompt_fallback_when_disabled():
     """FR-002/SC-001: tracing off → the byte-exact constant + version None."""
     from sr_agent.eval.tracer import NOOP_TRACER

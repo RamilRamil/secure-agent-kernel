@@ -37,6 +37,22 @@ def test_seq_synth_prewrite_runs_import_paths(tmp_path):
     assert applied == ["import_paths"]
 
 
+def test_seq_synth_prewrite_uses_synth_dir_depth(tmp_path):
+    """FR-005/SC-003 (permanent guard for the base_dir divergence FR-014 named): the pre-write
+    rewrites an off-by-one import relative to the SYNTH dir (audit/poc/_synth), one level deeper
+    than audit/poc. A regression to base_dir=project would yield `../../…` and fail this."""
+    (tmp_path / "contracts").mkdir()
+    (tmp_path / "contracts" / "DemoBase.sol").write_text("// x\ncontract DemoBase {}\n")
+    synth_dir = tmp_path / "audit" / "poc" / "_synth"
+    synth_dir.mkdir(parents=True)
+    code = ('// SPDX-License-Identifier: MIT\npragma solidity ^0.8.28;\n'
+            'import { DemoBase } from "./DemoBase.sol";\n'
+            "abstract contract SynthBase is DemoBase {}")
+    out, applied = pqr._seq_synth_prewrite(code, tmp_path, synth_dir)
+    assert 'from "../../../contracts/DemoBase.sol"' in out   # synth-dir depth, NOT poc's ../../
+    assert applied == ["import_paths"]
+
+
 def test_seq_synth_prewrite_noop_returns_empty(tmp_path):
     synth_dir = tmp_path / "audit" / "poc" / "_synth"
     synth_dir.mkdir(parents=True)

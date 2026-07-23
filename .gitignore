@@ -1,5 +1,15 @@
-# Specify internal scaffolding (not needed in public repo)
-.specify/
+# Specify internal scaffolding (not needed in public repo) — machinery only.
+# The GOVERNANCE documents are tracked: the constitution declares itself the non-negotiable
+# authority and defines a formal amendment procedure (rationale + version bump + propagation),
+# which is unverifiable without a diff/review/revert trail; and the templates are the INPUTS
+# specs are generated from, so untracked templates make an old spec's provenance unexplainable.
+# Note the `.specify/*` form: a bare `.specify/` excludes the directory itself, and git will not
+# descend into an excluded directory, so per-file negations below would never take effect.
+.specify/*
+!.specify/memory/
+.specify/memory/*
+!.specify/memory/constitution.md
+!.specify/templates/
 session-summary.md
 
 # Runtime agent memory (project-specific, never commit)

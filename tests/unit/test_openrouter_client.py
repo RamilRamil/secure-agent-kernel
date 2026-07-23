@@ -91,3 +91,15 @@ def test_openrouter_turn_is_external_llm_output():
     with pytest.raises(ValueError):
         ChatTurn(session_id="s1", user_message="hi", agent_action=aa,
                  source_type=SourceType.human_input)
+
+
+# ── max_tokens budget is honored (was silently dropped) ───────────────────────
+
+def test_generate_passes_max_tokens_from_num_predict(captured):
+    _client().generate("hi", options={"num_predict": 6000})
+    assert captured["body"]["max_tokens"] == 6000
+
+
+def test_generate_omits_max_tokens_without_num_predict(captured):
+    _client().generate("hi")
+    assert "max_tokens" not in captured["body"]

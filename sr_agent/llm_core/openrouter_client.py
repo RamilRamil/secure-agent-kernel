@@ -60,6 +60,12 @@ class OpenRouterClient:
         }
         if fmt == "json":
             body["response_format"] = {"type": "json_object"}
+        # Honor the caller's output-token budget (was silently dropped): map `num_predict`
+        # to OpenRouter's `max_tokens`. Without it the provider default applies — and a
+        # reasoning model can spend the whole default on reasoning tokens, returning EMPTY
+        # `content` (the extraction failure that surfaced with deepseek-v3.2-exp).
+        if options and options.get("num_predict"):
+            body["max_tokens"] = int(options["num_predict"])
         req = urllib.request.Request(
             BASE_URL,
             data=json.dumps(body).encode("utf-8"),

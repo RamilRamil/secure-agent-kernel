@@ -1309,3 +1309,42 @@ def test_seed_prompts_creates_one_per_prompt():
     pqr.seed_prompts(tr)
     assert {n for n, _ in created} == set(pqr._HARNESS_PROMPTS)
     assert all(labels == ["production"] for _, labels in created)
+
+
+# ── Robust task extraction for hosted/reasoning models (empty/fenced replies) ──
+class _FakeExtractClient:
+    """A generate() that returns scripted replies (for extract_tasks)."""
+    def __init__(self, replies):
+        self._r = list(replies)
+    def generate(self, prompt, fmt=None, options=None):
+        return self._r.pop(0)
+
+
+_ONE_TASK = '{"tasks":[{"id":"1","title":"t","location":"L","description":"d"}]}'
+
+
+def test_extract_tasks_strips_markdown_fences(tmp_path):
+    """A reply wrapped in ```json fences parses (not an opaque JSONDecodeError)."""
+    rep = tmp_path / "r.md"; rep.write_text("# report\n", encoding="utf-8")
+    client = _FakeExtractClient(["```json\n" + _ONE_TASK + "\n```"])
+    tasks = pqr.extract_tasks(client, rep, log=[].append)
+    assert [t["id"] for t in tasks] == ["1"]
+
+
+def test_extract_tasks_retries_empty_then_succeeds(tmp_path):
+    """An empty reply (reasoning model returned no content) is retried, not fatal."""
+    rep = tmp_path / "r.md"; rep.write_text("# report\n", encoding="utf-8")
+    ev = []
+    client = _FakeExtractClient(["", _ONE_TASK])
+    tasks = pqr.extract_tasks(client, rep, log=ev.append)
+    assert [t["id"] for t in tasks] == ["1"]
+    assert any(e.get("event") == "model_retry" for e in ev)
+
+
+def test_extract_tasks_all_empty_raises_model_error(tmp_path):
+    """Persistent empty replies raise a MODEL_ERROR (→ clean extract_failed in main), not
+    an opaque `Expecting value: line 1 column 1 (char 0)`."""
+    rep = tmp_path / "r.md"; rep.write_text("# report\n", encoding="utf-8")
+    client = _FakeExtractClient(["", "", ""])
+    with pytest.raises(pqr.OpenRouterUnavailable):
+        pqr.extract_tasks(client, rep, log=[].append)

@@ -131,6 +131,31 @@ def test_run_case_pins_the_finding_via_tasks_from(tmp_path, monkeypatch):
     assert task[0]["title"] == "Reentrancy in withdraw"            # curated text, verbatim
 
 
+def test_run_case_hard_timeout_records_error_and_continues(tmp_path, monkeypatch):
+    """A wedged harness child must NOT hang the whole C×N eval. `--max-minutes` is only a budget the
+    harness checks in its own loop; it cannot interrupt a stuck forge/Docker child (observed live).
+    run_case therefore passes a HARD subprocess timeout, and on expiry records the run in the
+    off-ladder ERROR bucket and moves on. Subprocess is STUBBED — nothing is executed."""
+    d, _ = _curated(tmp_path, cid="wedge", finding_id="7")
+    case = load_case(d)
+    seen = {}
+
+    def _wedged_run(argv, **k):
+        seen["timeout"] = k.get("timeout")
+        raise pb.subprocess.TimeoutExpired(cmd=argv, timeout=k.get("timeout") or 0)
+
+    monkeypatch.setattr(pb.subprocess, "run", _wedged_run)
+    outcomes = pb.run_case(case, _cfg(n=2), image=None, fork=False, max_minutes=1.0)
+
+    assert len(outcomes) == 2                       # both runs recorded — the loop did not abort
+    assert all(o.stage == pb.ERROR for o in outcomes)          # off-ladder infra bucket, not a proving-failure
+    assert all(o.outcome == "harness_timeout" for o in outcomes)
+    assert seen["timeout"] is not None and seen["timeout"] > 60  # a real deadline, with margin over the budget
+    # ERROR runs land off-ladder in the funnel, never counted as ladder casualties
+    fn = pb.build_funnel(outcomes)
+    assert fn.off_ladder[pb.ERROR] == ["wedge", "wedge"]
+
+
 # ── the Jeffreys interval (US1) ───────────────────────────────────────────────
 
 def test_interval_anchors():

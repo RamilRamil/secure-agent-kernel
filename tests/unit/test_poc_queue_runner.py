@@ -977,6 +977,31 @@ def test_synthesize_writes_only_audit_area(tmp_path, monkeypatch):
     assert not (proj / "audit" / "poc" / "_synth" / "SynthBase_H_01.sol").exists()  # rejected base removed
 
 
+def test_synthesize_preserves_rejected_base_and_says_why(tmp_path, monkeypatch):
+    """Observability: when synthesis gives up, (a) it says WHY the deterministic repair stopped
+    (`scaffold_repair_exhausted` naming the fixers consulted), and (b) the rejected base is PRESERVED
+    as an inert `.rejected` file instead of being deleted. Deleting it destroyed the only artifact
+    that explains a repair which should have fired but did not (hit live on GLM-5.2)."""
+    proj = _synth_project(tmp_path)
+    monkeypatch.setattr(pqr, "run_tests", lambda *a, **k: _COMPILE_FAIL)
+    events = []
+    path = pqr.synthesize_scaffold(
+        proj, {"id": "H-01", "title": "t", "location": "Foo", "description": "d"},
+        ["Foo"], "", None, _FakeGenClient(_SYNTH_BASE_CODE), object(), events.append)
+
+    assert path is None                                              # still rejected — bar unchanged
+    synth_dir = proj / "audit" / "poc" / "_synth"
+    assert not (synth_dir / "SynthBase_H_01.sol").exists()           # never leave a compilable .sol
+    rejected = synth_dir / "SynthBase_H_01.sol.rejected"
+    assert rejected.exists() and "SynthBase_H_01" in rejected.read_text()   # evidence kept, inert
+    names = [e["event"] for e in events]
+    assert "scaffold_repair_exhausted" in names                      # the give-up is no longer silent
+    ex = next(e for e in events if e["event"] == "scaffold_repair_exhausted")
+    assert set(ex["consulted"]) == {"import_paths", "nested_imports", "address_interface"}
+    failed = next(e for e in events if e["event"] == "scaffold_synthesis_failed")
+    assert failed["rejected_base"].endswith(".rejected")             # log points at the evidence
+
+
 def test_synthesize_scaffold_failure_paths(tmp_path, monkeypatch):
     """FR-004/FR-005/SC-002: no_build / no_output / infra each → None + the right
     reason, never a used base."""

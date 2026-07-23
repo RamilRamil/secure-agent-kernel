@@ -53,6 +53,26 @@ def test_seq_synth_prewrite_uses_synth_dir_depth(tmp_path):
     assert applied == ["import_paths"]
 
 
+def test_fix_import_paths_picks_shallowest_of_same_named(tmp_path):
+    """Feature 033 F2 (determinism): with two same-named files (a real src contract + a deeper
+    mock), the rewrite resolves to the SHALLOWEST path deterministically — not rglob's unstable
+    os.scandir order, which could silently import the mock (a PoC compiling against the wrong type)."""
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "IFoo.sol").write_text("// x\ninterface IFoo {}\n")
+    (tmp_path / "test" / "mocks").mkdir(parents=True)
+    (tmp_path / "test" / "mocks" / "IFoo.sol").write_text("// x\ncontract IFoo {}\n")
+    poc_dir = tmp_path / "audit" / "poc"
+    poc_dir.mkdir(parents=True)
+    code = ('// SPDX-License-Identifier: MIT\npragma solidity ^0.8.28;\n'
+            'import { IFoo } from "./IFoo.sol";\ncontract PoC {}')
+    out, changed = pqr._fix_import_paths(code, tmp_path)
+    assert changed
+    assert 'from "../../src/IFoo.sol"' in out          # the shallow real one, deterministically
+    assert "test/mocks" not in out                      # never the deeper mock
+    # stable across repeated runs (no scandir-order dependence)
+    assert pqr._fix_import_paths(code, tmp_path)[0] == out
+
+
 def test_seq_synth_prewrite_noop_returns_empty(tmp_path):
     synth_dir = tmp_path / "audit" / "poc" / "_synth"
     synth_dir.mkdir(parents=True)
@@ -82,7 +102,7 @@ def test_seq_draft_inplace_auto_imports_known_symbol():
     """FR-005/SC-003: the in-place sequence auto-imports a file-map-known undeclared symbol."""
     code = ("// SPDX-License-Identifier: MIT\npragma solidity ^0.8.28;\n"
             "contract PoC { function t() public { uint256 z = Widget; } }")
-    out, applied = pqr._seq_draft_inplace(code, _undeclared_block("Widget"), None,
+    out, applied = pqr._seq_draft_inplace(code, _undeclared_block("Widget"),
                                           "Widget: contracts/Widget.sol")
     assert 'import { Widget } from "contracts/Widget.sol";' in out
     assert "undeclared_import" in applied
@@ -92,7 +112,7 @@ def test_seq_draft_inplace_does_not_run_import_paths():
     """SC-003 (the pinned GAP): the in-place sequence deliberately does NOT run
     import_paths — a bare SPDX that import_paths WOULD repair is left UNCHANGED here."""
     code = _BARE_SPDX + "contract PoC { function t() public {} }"
-    out, applied = pqr._seq_draft_inplace(code, "Compiler run failed:\n", None, "")
+    out, applied = pqr._seq_draft_inplace(code, "Compiler run failed:\n", "")
     assert out == code                       # untouched — no import_paths in this sequence
     assert out.startswith("SPDX-License-Identifier")   # SPDX still bare (would be fixed if it ran)
     assert applied == []

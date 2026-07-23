@@ -1227,21 +1227,21 @@ _UND_CODE = ("// SPDX-License-Identifier: MIT\npragma solidity ^0.8.28;\n"
 
 def test_fix_undeclared_import_adds_known_symbol():
     """FR-001: an undeclared name the file-map resolves is auto-imported with its real path."""
-    out, ch = pqr._fix_undeclared_import(_UND_CODE, _undeclared_block("Widget"), None,
+    out, ch = pqr._fix_undeclared_import(_UND_CODE, _undeclared_block("Widget"),
                                          "Widget: contracts/Widget.sol")
     assert ch is True and 'import { Widget } from "contracts/Widget.sol";' in out
 
 
 def test_fix_undeclared_import_handles_7920_wording():
     """FR-001: the 7920 'Identifier not found' wording also triggers the import."""
-    out, ch = pqr._fix_undeclared_import(_UND_CODE, _undeclared_block("Widget", "7920"), None,
+    out, ch = pqr._fix_undeclared_import(_UND_CODE, _undeclared_block("Widget", "7920"),
                                          "Widget: contracts/Widget.sol")
     assert ch is True and "import { Widget }" in out
 
 
 def test_fix_undeclared_import_skips_unknown_anti_invention():
     """FR-003: a name the file-map does NOT resolve is NEVER imported (anti-invention)."""
-    out, ch = pqr._fix_undeclared_import(_UND_CODE, _undeclared_block("Widget"), None,
+    out, ch = pqr._fix_undeclared_import(_UND_CODE, _undeclared_block("Widget"),
                                          "Other: contracts/Other.sol")
     assert ch is False and out == _UND_CODE
 
@@ -1249,21 +1249,21 @@ def test_fix_undeclared_import_skips_unknown_anti_invention():
 def test_fix_undeclared_import_mix_known_and_unknown():
     """FR-001/FR-003: only the known name is imported; the unknown is left for the model."""
     forge = _undeclared_block("Widget") + _undeclared_block("Bogus")
-    out, ch = pqr._fix_undeclared_import(_UND_CODE, forge, None, "Widget: contracts/Widget.sol")
+    out, ch = pqr._fix_undeclared_import(_UND_CODE, forge, "Widget: contracts/Widget.sol")
     assert ch is True and "import { Widget }" in out and "import { Bogus }" not in out
 
 
 def test_fix_undeclared_import_idempotent():
     """FR-002: a name already imported is not re-added."""
     fm = "Widget: contracts/Widget.sol"
-    out, _ = pqr._fix_undeclared_import(_UND_CODE, _undeclared_block("Widget"), None, fm)
-    out2, ch2 = pqr._fix_undeclared_import(out, _undeclared_block("Widget"), None, fm)
+    out, _ = pqr._fix_undeclared_import(_UND_CODE, _undeclared_block("Widget"), fm)
+    out2, ch2 = pqr._fix_undeclared_import(out, _undeclared_block("Widget"), fm)
     assert ch2 is False and out2 == out
 
 
 def test_fix_undeclared_import_noop_without_file_map():
     """FR-007: no file-map (no index) → the transform is a no-op (never an error)."""
-    out, ch = pqr._fix_undeclared_import(_UND_CODE, _undeclared_block("Widget"), None, "")
+    out, ch = pqr._fix_undeclared_import(_UND_CODE, _undeclared_block("Widget"), "")
     assert ch is False and out == _UND_CODE
 
 

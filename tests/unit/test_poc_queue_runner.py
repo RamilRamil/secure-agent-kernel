@@ -698,6 +698,57 @@ def test_extract_fix_verbatim():
     assert pqr.extract_fix_for_finding(_SYNTH_REPORT, {"id": "X", "title": "totally unrelated topic here"}) is None
 
 
+# ── Hardening: a finding must NOT borrow another finding's diff via generic overlap ──
+# (a wrong fix yields a FALSE `verified`, worse than `no_fix`). Real report: only the
+# detailed high-severity findings carry a diff; a low-severity finding sharing generic
+# audit words (`wrong`, `owner`, `slot`) with such a section used to grab its diff.
+_SPURIOUS_REPORT = '''
+## Findings
+[1] **1. `finalizeWithFee` checks the wrong owner cap**
+
+**Fix**
+```diff
+--- a/src/F.sol
++++ b/src/F.sol
+@@ -1 +1 @@
+-owner
++expected_owner
+```
+---
+[2] **2. `metaKey` nonce uses the wrong reserved slot**
+
+(no fix block — a low-severity finding)
+---
+[3] **3. `FooPairProvider` discards the wrong oracle observations**
+
+(no fix block — a low-severity finding)
+---
+'''
+
+
+def test_extract_fix_refuses_generic_only_overlap():
+    """A finding whose title shares only SHORT generic words (`checks`, `wrong`, `owner`)
+    with a diff-carrying section — but no finding-specific anchor — gets None, not that
+    section's diff. `wrong` is in every heading (generic); `owner`/`checks` are short."""
+    spurious = {"id": "L-99", "title": "guard checks the wrong owner on every call"}
+    assert pqr.extract_fix_for_finding(_SPURIOUS_REPORT, spurious) is None
+
+
+def test_extract_fix_matches_on_distinctive_identifier():
+    """The finding that actually owns the section (shares its long, rare identifier
+    `finalizeWithFee`) still gets its diff — hardening rejects noise, not real matches."""
+    real = {"id": "H-01", "title": "`finalizeWithFee` checks the wrong owner cap"}
+    fix = pqr.extract_fix_for_finding(_SPURIOUS_REPORT, real)
+    assert fix is not None and "expected_owner" in fix
+
+
+def test_extract_fix_no_diff_section_is_none_not_borrowed():
+    """A low-severity finding that matches its OWN (diff-less) section returns None —
+    it must not fall through to a different finding's diff."""
+    meta = {"id": "L-03", "title": "`metaKey` nonce uses the wrong reserved slot"}
+    assert pqr.extract_fix_for_finding(_SPURIOUS_REPORT, meta) is None
+
+
 def _init_git_project(tmp_path):
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "A.sol").write_text("contract A {\n}\n", encoding="utf-8")

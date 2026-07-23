@@ -142,5 +142,9 @@ class DockerSandbox:
                 [self.docker_bin, "kill", container_name],
                 capture_output=True, text=True, timeout=15,
             )
-        except Exception:
-            logger.debug("Failed to kill container %s (may have already exited)", container_name)
+        except Exception as e:
+            # WARNING, not debug: a kill that fails silently leaves a container RUNNING — and a
+            # lingering container starves later runs of the Docker VM's memory (contention that read
+            # as a 5.5h hang and a false root-cause). Surface it with the name so it's diagnosable.
+            logger.warning("Failed to kill container %s (may have exited, or is STILL RUNNING → "
+                           "contention risk): %s", container_name, e)

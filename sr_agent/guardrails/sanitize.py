@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import re
 import unicodedata
 from dataclasses import dataclass, field
@@ -54,17 +55,20 @@ def sanitize(raw: str) -> SanitizeResult:
 
     # Detect (but do not remove) suspicious patterns
     if _BASE64_RE.search(normalized):
-        # Attempt to decode — if it decodes cleanly it's more suspicious
-        matches = _BASE64_RE.findall(normalized)
-        for match in matches[:3]:  # check first 3 matches only
+        # Attempt to decode — if it decodes to an instruction-shaped string it's more suspicious.
+        # Scan ALL blocks, not just the first 3: the cap was ATTACKER-CONTROLLED — prepending a few
+        # benign base64 blocks would push a malicious one past the window and defeat detection.
+        found_instruction = False
+        for match in _BASE64_RE.findall(normalized):
             try:
                 decoded = base64.b64decode(match + "==").decode("utf-8", errors="ignore")
-                if any(kw in decoded.lower() for kw in ("ignore", "disregard", "instead", "system")):
-                    flags.append("base64_instruction_pattern")
-                    break
-            except Exception:
-                pass
-        else:
+            except (binascii.Error, ValueError):
+                continue  # not valid base64 → not a decodable instruction (narrow: don't swallow all)
+            if any(kw in decoded.lower() for kw in ("ignore", "disregard", "instead", "system")):
+                flags.append("base64_instruction_pattern")
+                found_instruction = True
+                break
+        if not found_instruction:
             flags.append("base64_block_present")
 
     if _MORSE_RE.search(normalized):

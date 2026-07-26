@@ -815,6 +815,22 @@ def test_load_pinned_tasks_reads_file_and_attaches(tmp_path):
     assert out[0]["id"] == "1" and out[0]["title"] == "T" and out[0]["fix_patch"] == "P"
 
 
+def test_attach_fixes_passes_through_optional_class(tmp_path):
+    """Feature 037 G1: a pinned task MAY carry `class` (or `finding_class`); it is preserved as
+    `finding_class` so a per-model measurement is class-stratifiable (035 FR-018). Absent ⇒ "" — a
+    class-unlabelled battery still loads byte-identically to before (back-compatible)."""
+    report = "[88] **1. T**\n"
+    # accepts `class`
+    out = pqr._attach_fixes([{"id": "1", "title": "T", "class": "oracle-staleness"}], report, {})
+    assert out[0]["finding_class"] == "oracle-staleness"
+    # accepts `finding_class` alias
+    out2 = pqr._attach_fixes([{"id": "2", "title": "T", "finding_class": "rounding"}], report, {})
+    assert out2[0]["finding_class"] == "rounding"
+    # absent ⇒ empty, never missing (keeps the key stable for downstream consumers)
+    out3 = pqr._attach_fixes([{"id": "3", "title": "T"}], report, {})
+    assert out3[0]["finding_class"] == ""
+
+
 def test_dep_mounts_grafts_node_modules_readonly_into_the_container(tmp_path):
     """Feature 027 follow-up: the mutation-verify copy skips node_modules (650MB), so the patched
     build resolves `@openzeppelin/...` imports only if the ORIGINAL deps are MOUNTED read-only into

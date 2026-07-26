@@ -82,3 +82,6 @@ graphify-out/
 
 # cloned audit targets (spec 021): fetched target code, never committed
 /workspaces/
+
+# graphify tool output — contains target AST/graph, never commit
+.graphify-research/

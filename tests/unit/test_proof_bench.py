@@ -88,6 +88,58 @@ def test_valid_case_loads(tmp_path):
     assert case.description == "external call before the balance write"
 
 
+# ── feature 037 G1/G2: optional class field + class-stratified report ──────────────────────────
+
+def test_case_carries_optional_class_backcompat(tmp_path):
+    """G1: a case.json MAY carry `class` (or `finding_class`); absent ⇒ "" (existing cases still load)."""
+    d_none, _ = _curated(tmp_path, cid="cn")
+    assert load_case(d_none).finding_class == ""            # back-compatible default
+    d_cls, _ = _curated(tmp_path, cid="cc", **{"class": "access-control"})
+    assert load_case(d_cls).finding_class == "access-control"
+    d_alt, _ = _curated(tmp_path, cid="ca", finding_class="rounding")
+    assert load_case(d_alt).finding_class == "rounding"
+
+
+def _outcome(cid, verified, i=0):
+    return pb.CaseOutcome(case_id=cid, run_idx=i,
+                          stage="verified" if verified else "compiled",
+                          outcome="passed_verified" if verified else "not_triggered")
+
+
+def test_by_class_stratifies_and_never_merges_headline():
+    """G2: a per-class interval is produced ALONGSIDE the global headline (035 FR-018), never instead
+    of it; unlabelled case-runs form no spurious bucket."""
+    outcomes = [
+        _outcome("easy", True), _outcome("easy", True),        # rounding: 2/2
+        _outcome("hard", False), _outcome("hard", False),      # narrow: 0/2
+        _outcome("unl", True),                                  # unlabelled: contributes to headline only
+    ]
+    class_of = {"easy": "rounding", "hard": "narrow-precondition"}   # "unl" deliberately absent
+    rep = score(outcomes, _cfg(), class_of=class_of)
+    # headline is GLOBAL and unchanged by stratification: 3 verified / 5 trials
+    assert rep.interval.successes == 3 and rep.interval.trials == 5
+    # per-class buckets, unlabelled omitted (no "" key)
+    assert set(rep.by_class) == {"rounding", "narrow-precondition"}
+    assert rep.by_class["rounding"].successes == 2 and rep.by_class["rounding"].trials == 2
+    assert rep.by_class["narrow-precondition"].successes == 0 and rep.by_class["narrow-precondition"].trials == 2
+    # the class-dependent wall is READABLE at the data level: the two classes' verified rates differ
+    # (rounding fully passes, narrow fully fails) — exactly what a single scalar pass-rate would hide.
+    # (Interval SEPARATION needs a larger N than this fixture; G2 delivers the stratification, not a
+    #  disjointness claim at N=2.)
+    round_rate = rep.by_class["rounding"].successes / rep.by_class["rounding"].trials
+    narrow_rate = rep.by_class["narrow-precondition"].successes / rep.by_class["narrow-precondition"].trials
+    assert round_rate == 1.0 and narrow_rate == 0.0
+    # round-trips through to_dict
+    assert rep.to_dict()["by_class"]["rounding"]["successes"] == 2
+
+
+def test_no_class_of_yields_no_by_class():
+    """G2: without class labels the report is exactly as before — no by_class key (back-compatible)."""
+    rep = score([_outcome("a", True)], _cfg())
+    assert rep.by_class == {}
+    assert "by_class" not in rep.to_dict()
+
+
 def test_missing_curated_finding_is_loud(tmp_path):
     # feature 028 FR-008: absent OR empty curated field → loud, never a silent fallback to extraction
     for missing in ("title", "location", "description"):

@@ -1,6 +1,6 @@
-"""Feature 033 — characterization tests for the five named transform-application
+"""Feature 033 - characterization tests for the five named transform-application
 sequence-functions (FR-005). Each pins ONE site's exact sequence output over a fixed
-SYNTHETIC fixture (invented names only — no target material), so a future unification
+SYNTHETIC fixture (invented names only - no target material), so a future unification
 (spec 034) cannot silently change a sequence.
 
 These are the LASTING guardrail: green on the pre-extraction tree (the functions are
@@ -12,8 +12,9 @@ from __future__ import annotations
 
 import scripts.poc_queue_runner as pqr
 import scripts.solidity_fixers as sf
+from scripts.solidity_index import SymbolIndex
 
-# A bare SPDX line (missing its `//`) — `_fix_import_paths` repairs it independently of
+# A bare SPDX line (missing its `//`) - `_fix_import_paths` repairs it independently of
 # base_dir, so it deterministically pins that import_paths RAN in a sequence.
 _BARE_SPDX = "SPDX-License-Identifier: MIT\npragma solidity ^0.8.28;\n"
 
@@ -56,7 +57,7 @@ def test_seq_synth_prewrite_uses_synth_dir_depth(tmp_path):
 
 def test_fix_import_paths_picks_shallowest_of_same_named(tmp_path):
     """Feature 033 F2 (determinism): with two same-named files (a real src contract + a deeper
-    mock), the rewrite resolves to the SHALLOWEST path deterministically — not rglob's unstable
+    mock), the rewrite resolves to the SHALLOWEST path deterministically - not rglob's unstable
     os.scandir order, which could silently import the mock (a PoC compiling against the wrong type)."""
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "IFoo.sol").write_text("// x\ninterface IFoo {}\n")
@@ -66,7 +67,7 @@ def test_fix_import_paths_picks_shallowest_of_same_named(tmp_path):
     poc_dir.mkdir(parents=True)
     code = ('// SPDX-License-Identifier: MIT\npragma solidity ^0.8.28;\n'
             'import { IFoo } from "./IFoo.sol";\ncontract PoC {}')
-    out, changed = sf._fix_import_paths(code, tmp_path)
+    out, _matched, changed = sf._fix_import_paths(code, tmp_path)
     assert changed
     assert 'from "../../src/IFoo.sol"' in out          # the shallow real one, deterministically
     assert "test/mocks" not in out                      # never the deeper mock
@@ -78,23 +79,101 @@ def test_seq_synth_prewrite_noop_returns_empty(tmp_path):
     synth_dir = tmp_path / "audit" / "poc" / "_synth"
     synth_dir.mkdir(parents=True)
     # No trailing newline: _fix_import_paths re-joins with "\n".join even on a no-op, so a
-    # trailing "\n" would be dropped (existing behavior — pinned here as identity input).
+    # trailing "\n" would be dropped (existing behavior - pinned here as identity input).
     code = "// SPDX-License-Identifier: MIT\npragma solidity ^0.8.28;\ncontract C {}"
     out, applied = pqr._seq_synth_prewrite(code, tmp_path, synth_dir)
     assert out == code and applied == []
 
 
-# ── synthesis repair: import_paths(base_dir) → nested(NO file_map) → address ──
+# ── synthesis repair: import_paths → nested → undeclared → address ──
 
 def test_seq_synth_repair_order_and_applied(tmp_path):
-    """FR-005/SC-003: the repair sequence; with symbol_index=None and no 9553 in the
-    forge output, only import_paths fires (bare-SPDX), pinning it runs first."""
+    """FR-005/SC-003 + 040 FR-001c: the repair sequence returns per-fixer FixerResult rows;
+    with symbol_index=None and no 9553, only import_paths matches+applies (bare-SPDX)."""
     synth_dir = tmp_path / "audit" / "poc" / "_synth"
     synth_dir.mkdir(parents=True)
     code = _BARE_SPDX + "contract SynthBase {}\n"
-    out, applied = pqr._seq_synth_repair(code, "Compiler run failed:\n", tmp_path, synth_dir, None)
+    out, results = pqr._seq_synth_repair(code, "Compiler run failed:\n", tmp_path, synth_dir, None)
     assert out.startswith("// SPDX-License-Identifier: MIT")
-    assert applied == ["import_paths"]   # nested/address no-op on this input
+    assert [r["name"] for r in results] == [
+        "import_paths", "nested_imports", "undeclared_import", "address_interface"]
+    assert sf._applied_names(results) == ["import_paths"]   # nested/undeclared/address no-op
+    by_name = {r["name"]: r for r in results}
+    assert by_name["import_paths"]["matched"] and by_name["import_paths"]["applied"]
+    assert not by_name["nested_imports"]["matched"] and not by_name["address_interface"]["matched"]
+    assert not by_name["undeclared_import"]["matched"]
+
+
+def test_seq_synth_repair_undeclared_from_scaffold(tmp_path):
+    """Synth repair applies undeclared_import via parent-scaffold named import when file_map empty."""
+    synth_dir = tmp_path / "audit" / "poc" / "_synth"
+    synth_dir.mkdir(parents=True)
+    code = ("// SPDX-License-Identifier: MIT\npragma solidity ^0.8.28;\n"
+            "abstract contract SynthBase { function t() public { Widget w; } }\n")
+    existing = 'import { Widget } from "@deps/Widget.sol";\n'
+    forge = _undeclared_block("Widget", "7920")
+    out, results = pqr._seq_synth_repair(
+        code, forge, tmp_path, synth_dir, None, file_map="", existing=existing)
+    by_name = {r["name"]: r for r in results}
+    assert by_name["undeclared_import"]["matched"] and by_name["undeclared_import"]["applied"]
+    assert 'import { Widget } from "@deps/Widget.sol";' in out
+    assert "undeclared_import" in sf._applied_names(results)
+
+
+def test_seq_synth_repair_matched_not_applied_is_distinct(tmp_path):
+    """T030/FR-001c: `matched && !applied` is representable and distinct from `!matched`
+    (9553 present but flagged line out of range → address_interface matched, nothing applied)."""
+    synth_dir = tmp_path / "audit" / "poc" / "_synth"
+    synth_dir.mkdir(parents=True)
+    code = "// SPDX-License-Identifier: MIT\npragma solidity ^0.8.28;\ncontract SynthBase {}\n"
+    forge = ("Compiler run failed:\n"
+             "Error (9553): Invalid type for argument in function call. "
+             "Invalid implicit conversion from address to contract IThing requested.\n"
+             "  --> audit/poc/_synth/SynthBase.sol:99:9:\n")
+    _out, results = pqr._seq_synth_repair(code, forge, tmp_path, synth_dir, None)
+    by_name = {r["name"]: r for r in results}
+    assert by_name["address_interface"]["matched"] is True
+    assert by_name["address_interface"]["applied"] is False
+    assert sf._applied_names(results) == []
+    assert any(r["matched"] and not r["applied"] for r in results)
+    assert not by_name["import_paths"]["matched"]   # !matched ≠ matched&&!applied
+
+
+def test_fix_nested_resolvable_proxy_library_chain(tmp_path):
+    """T041/FR-013: a resolvable nested type inside a project library, imported from a WRONG
+    path, resolves via the symbol index (base_dir) - previously exhausted because synth repair
+    had no file_map and reused the wrong orig_path for the container import."""
+    lib = tmp_path / "contracts" / "ProxyLib.sol"
+    lib.parent.mkdir(parents=True)
+    lib.write_text(
+        "// SPDX-License-Identifier: MIT\npragma solidity ^0.8.28;\n"
+        "library ProxyLib {\n"
+        "    struct InitParams { uint256 x; }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    idx = SymbolIndex.build(tmp_path)
+    synth_dir = tmp_path / "audit" / "poc" / "_synth"
+    synth_dir.mkdir(parents=True)
+    # Wrong relative path (as a model often emits); without index resolution the fixer would
+    # re-import ProxyLib from the same wrong path and the chain would still not compile.
+    code = ('// SPDX-License-Identifier: MIT\npragma solidity ^0.8.28;\n'
+            'import { InitParams } from "./Missing.sol";\n'
+            "abstract contract SynthBase {\n"
+            "    function _init(InitParams memory p) internal pure {}\n"
+            "}\n")
+    # Old contract (no base_dir): container keeps "./Missing.sol" → still broken.
+    old, _m_old, a_old = sf._fix_nested_type_imports(code, idx, "")
+    assert a_old
+    assert 'from "./Missing.sol"' in old
+    # New contract (base_dir=synth_dir): container resolves to the real library path.
+    out, matched, applied = sf._fix_nested_type_imports(code, idx, "", base_dir=synth_dir)
+    assert matched and applied
+    assert "import { InitParams }" not in out
+    assert "ProxyLib.InitParams" in out
+    assert 'import { ProxyLib } from' in out
+    assert "Missing.sol" not in out
+    assert "contracts/ProxyLib.sol" in out
 
 
 # ── drafting in-place: undeclared → address (NOTABLY no import_paths) ─────────
@@ -111,10 +190,10 @@ def test_seq_draft_inplace_auto_imports_known_symbol():
 
 def test_seq_draft_inplace_does_not_run_import_paths():
     """SC-003 (the pinned GAP): the in-place sequence deliberately does NOT run
-    import_paths — a bare SPDX that import_paths WOULD repair is left UNCHANGED here."""
+    import_paths - a bare SPDX that import_paths WOULD repair is left UNCHANGED here."""
     code = _BARE_SPDX + "contract PoC { function t() public {} }"
     out, applied = pqr._seq_draft_inplace(code, "Compiler run failed:\n", "")
-    assert out == code                       # untouched — no import_paths in this sequence
+    assert out == code                       # untouched - no import_paths in this sequence
     assert out.startswith("SPDX-License-Identifier")   # SPDX still bare (would be fixed if it ran)
     assert applied == []
 
@@ -140,7 +219,7 @@ def test_seq_postmodel_order_import_paths_then_scaffold_base(tmp_path):
 
 
 def test_seq_postmodel_guard_false_skips_setup_override(tmp_path):
-    """With guard=False, setup_override is never consulted — it cannot appear in applied."""
+    """With guard=False, setup_override is never consulted - it cannot appear in applied."""
     code = ("// SPDX-License-Identifier: MIT\npragma solidity ^0.8.28;\n"
             "contract PoC is FooDeploy {\n"
             "    function setUp() public {}\n"
@@ -152,7 +231,7 @@ def test_seq_postmodel_guard_false_skips_setup_override(tmp_path):
 # ── E1 (feature 033 follow-up): _tracked_sol surfaces a git failure ───────────
 def test_tracked_sol_warns_on_git_failure(tmp_path, monkeypatch, caplog):
     """A git failure used to silently disable the tracked-source preference. Now it logs a
-    warning (behavior still degrades to an empty set — visible, not silent)."""
+    warning (behavior still degrades to an empty set - visible, not silent)."""
     import logging
     import scripts.solidity_utils as su
 

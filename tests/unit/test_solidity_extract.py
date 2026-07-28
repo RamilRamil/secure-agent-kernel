@@ -35,6 +35,18 @@ def test_trailing_prose_after_last_brace_dropped():
     assert out == _SOL
 
 
+def test_trailing_fence_and_prose_with_braces_dropped():
+    # Models often append ``` + explanation that itself contains `{`/`}` examples;
+    # last-brace-wins wrongly kept that junk (D6/040 rejected synth bases).
+    junk = (
+        f"{_SOL}\n```\n\nWait, but the existing base:\n"
+        "```solidity\ncontract Other {\n    function setUp() public {\n    }\n}\n```\n"
+    )
+    out = pqr._extract_solidity(junk)
+    assert out == _SOL
+    assert "```" not in out and "Wait," not in out and "Other" not in out
+
+
 def test_trailing_block_comment_kept():
     # a trailing `/* Proof Explanation */` is valid Solidity and must survive
     r = f"{_SOL}\n/*\n * ## Proof Explanation\n * step 1 ...\n */"

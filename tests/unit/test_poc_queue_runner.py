@@ -53,6 +53,11 @@ def two_contract_project(tmp_path: Path) -> Path:
 LOCATION = "FooCDO.coverage / calculateFooMode + Foo.cancel"
 
 
+def test_location_names_skips_pascal_suffix_inside_camel_method():
+    """calculateFooMode must not yield ExitMode as a deployable type name."""
+    assert pqr._location_names(LOCATION) == ["FooCDO", "Foo"]
+
+
 @pytest.mark.parametrize("use_ast", [True, False])
 def test_each_name_gets_its_own_budget_share(two_contract_project, monkeypatch, use_ast):
     """The original bug: FooCDO (first name) exhausting a SHARED budget meant
@@ -68,7 +73,7 @@ def test_each_name_gets_its_own_budget_share(two_contract_project, monkeypatch, 
 @pytest.mark.parametrize("use_ast", [True, False])
 def test_location_named_function_survives_truncation(two_contract_project, monkeypatch, use_ast):
     """`cancel` is declared LAST in Foo.sol, after two other external
-    functions — under a tight per-file budget it would be the first one truncated
+    functions - under a tight per-file budget it would be the first one truncated
     out. Since `location` names it explicitly, it must be rendered first and
     survive, along with its onlyUser(user) CALLER REQUIREMENT annotation."""
     monkeypatch.setattr(pqr, "CALLABLE_API_BUDGET", 250)
@@ -80,7 +85,7 @@ def test_location_named_function_survives_truncation(two_contract_project, monke
 
 def test_file_manifest_uses_real_contract_names(two_contract_project):
     """Feature 007 T020: file map names come from the parsed AST, not the
-    filename — verified here on a project where they happen to match, and against
+    filename - verified here on a project where they happen to match, and against
     the real target (see test_solidity_index.py) where they don't."""
     idx = SymbolIndex.build(two_contract_project)
     fm = pqr.build_file_manifest(two_contract_project, idx)
@@ -132,7 +137,7 @@ class _FakeToolClient:
 
 def test_tool_and_marker_protocols_render_lookup_identically(lookup_fixture_project):
     """SC-002: switching transport must not change WHAT gets resolved or how a
-    result is rendered — both protocols call the SAME _render_lookup_response(),
+    result is rendered - both protocols call the SAME _render_lookup_response(),
     so the content a model actually sees must be byte-identical."""
     idx = SymbolIndex.build(lookup_fixture_project)
     expected = pqr._render_lookup_response([("TBalanceState", idx.lookup("TBalanceState"))])
@@ -173,7 +178,7 @@ def test_tool_calls_respect_budget_and_log_each(lookup_fixture_project):
 
 
 def test_tool_call_missing_name_argument_is_unresolved(lookup_fixture_project):
-    """Edge case (spec.md): a malformed tool call must not crash — treated as
+    """Edge case (spec.md): a malformed tool call must not crash - treated as
     an unresolved lookup, logged, counted against budget."""
     idx = SymbolIndex.build(lookup_fixture_project)
     logged = []
@@ -216,7 +221,7 @@ def test_raw_function_tag_leaked_as_text_is_parsed_not_written(lookup_fixture_pr
 def test_raw_function_tag_stripped_even_if_never_resolved(lookup_fixture_project):
     """If a raw <function=...> fragment appears on the FINAL turn (budget
     already exhausted, or unparseable), it must still never reach the returned
-    source — FR-007."""
+    source - FR-007."""
     idx = SymbolIndex.build(lookup_fixture_project)
     tool_client = _FakeToolClient([
         {"role": "assistant",
@@ -230,7 +235,7 @@ def test_raw_function_tag_stripped_even_if_never_resolved(lookup_fixture_project
 
 def test_tool_call_wrapper_leaked_as_text_is_parsed(lookup_fixture_project):
     """Live H-01 run (2026-07-06): the SAME model, a DIFFERENT raw-text leak
-    format — the generic Hermes/Qwen <tool_call>{...}</tool_call> wrapper,
+    format - the generic Hermes/Qwen <tool_call>{...}</tool_call> wrapper,
     distinct from <function=name> (2026-07-05's finding). Both are real,
     recurring shapes this build falls back to; both must be parsed as real
     lookup requests, not written to the PoC file."""
@@ -302,7 +307,7 @@ def test_forced_tool_protocol_on_capable_model():
 # ── mechanism_signal: description as a candidate source, not just location ──
 
 def test_mechanism_signal_falls_back_to_description_when_location_is_bare():
-    """Live H-01 run (2026-07-06): extraction is non-deterministic — location
+    """Live H-01 run (2026-07-06): extraction is non-deterministic - location
     degraded to a bare filename ("Foo.sol", no method names) on one
     run even though the SAME finding's description names the real mechanism
     (`coverage()`, `cancel()`) in markdown code spans. A PoC that reached a
@@ -332,7 +337,7 @@ def test_mechanism_signal_falls_back_to_description_when_location_is_bare():
 
 def test_mechanism_signal_description_extraction_is_precise_not_noisy():
     """Backtick-quoted method references in prose (`coverage()`) must be
-    extracted precisely — not diluted by ordinary English words in the same
+    extracted precisely - not diluted by ordinary English words in the same
     sentence (before/which/meant/enforce/...), which would drown the
     diagnostic signal in noise even though it's already diagnostic-only."""
     description = (
@@ -347,10 +352,10 @@ def test_mechanism_signal_description_extraction_is_precise_not_noisy():
 
 def test_scaffold_missing_types_flags_undeclared_contract():
     """Live H-01 finding (2026-07-06): the auto-discovered scaffold deployed
-    ERC20Foo but declared no Foo at all — no attempt could
+    ERC20Foo but declared no Foo at all - no attempt could
     ever succeed regardless of grounding quality, and this cost several live
     attempts to notice by hand. A scaffold mentioning the name elsewhere
-    (import, comment) must not count as providing it — only a real state
+    (import, comment) must not count as providing it - only a real state
     variable declaration of that type does."""
     scaffold = """
     import { Foo } from "./Foo.sol";
@@ -369,7 +374,7 @@ def test_scaffold_missing_types_empty_when_declared():
 
 def test_scaffold_missing_types_against_real_scaffolds():
     """Non-synthetic sanity check against this session's actual target
-    project, if present on this machine — skipped elsewhere."""
+    project, if present on this machine - skipped elsewhere."""
     bad = Path("/Users/ramilmustafin/Projects/Contests/2026-06-foo-bb/contracts/"
                "test/PoC/Guardian/FooProtocolDeploymentBase.sol")
     good = Path("/Users/ramilmustafin/Projects/Contests/2026-06-foo-bb/contracts/"
@@ -382,7 +387,7 @@ def test_scaffold_missing_types_against_real_scaffolds():
 
 # ── Feature 009 US1: verdict gates + deterministic repair helpers ──────────
 # These functions DECIDE pass/fail/compiled/vacuous/stall. Before spec 009 they
-# had zero direct tests — the exact gates where a bug becomes a false milestone
+# had zero direct tests - the exact gates where a bug becomes a false milestone
 # (spec 006 traces to a `_compiled` denylist bug caught only in a live run). Each
 # test pins a bug class actually seen this session, offline, synthetic input only.
 
@@ -406,8 +411,8 @@ def test_compiled_positive_signal_only():
 def test_poc_defects_flags_empty_mock_and_missing_import():
     """FR-003: the vacuous-PoC gate flags (a) an empty/commented body with no
     assertion, (b) a re-declared/mocked target contract, (c) a missing target
-    import — the three evasions seen 2026-07-05."""
-    # (a) no active assertion — empty/commented test
+    import - the three evasions seen 2026-07-05."""
+    # (a) no active assertion - empty/commented test
     empty = "contract PoC is Base { function test() public { /* nothing */ } }"
     assert any("no active assertion" in d for d in pqr._poc_defects(empty, ["Target"], scaffold_used=True))
     # (b) re-declares the real target as an inline mock
@@ -415,7 +420,7 @@ def test_poc_defects_flags_empty_mock_and_missing_import():
             "contract Target { }\n"
             "contract PoC is Base { function test() public { assertTrue(true); } }")
     assert any("re-declares" in d for d in pqr._poc_defects(mock, ["Target"], scaffold_used=True))
-    # (c) missing target import (non-scaffold path — must import the target itself)
+    # (c) missing target import (non-scaffold path - must import the target itself)
     noimport = ("import {Test} from 'forge-std/Test.sol';\n"
                 "contract PoC { function test() public { assertTrue(true); } }")
     assert any("does not import the real target" in d for d in pqr._poc_defects(noimport, ["Target"], scaffold_used=False))
@@ -444,7 +449,7 @@ def test_stall_signature_keys_on_message_not_line():
 def test_targeted_hints_resolve_member_and_path_errors():
     """FR-005: `_targeted_hints`/`_sig_by_method` turn a compiler error into an
     authoritative fix against the real signatures/paths, not a hope."""
-    callable_api = "// Foo — real callable signatures:\nfunction cancel(address vault, uint256 i) external;"
+    callable_api = "// Foo - real callable signatures:\nfunction cancel(address vault, uint256 i) external;"
     file_map = "Foo: ../../contracts/tranches/base/cooldown/Foo.sol"
     # 9582 member-not-found → list the contract's real functions
     member_err = 'Error (9582): Member "setFoo" not found or not visible after argument-dependent lookup in contract Foo.'
@@ -486,7 +491,7 @@ def test_fix_import_paths_repairs_bare_spdx(tmp_path):
     """FR-005: `_fix_import_paths` restores a bare SPDX line's `//` (a 2314 syntax
     error) line-by-line without touching other lines."""
     code = "SPDX-License-Identifier: MIT\npragma solidity ^0.8.28;\ncontract PoC {}"
-    fixed, changed = sf._fix_import_paths(code, tmp_path)
+    fixed, _matched, changed = sf._fix_import_paths(code, tmp_path)
     assert changed is True
     assert fixed.startswith("// SPDX-License-Identifier: MIT")
     assert "pragma solidity ^0.8.28;" in fixed  # untouched
@@ -496,7 +501,7 @@ def test_fix_import_paths_base_dir_corrects_synth_depth(tmp_path):
     """The scaffold-synthesis base lives a level deeper (audit/poc/_synth/) than a drafted PoC
     (audit/poc/), so a model-written import is off by one `../`. Passing `base_dir=synth_dir`
     rewrites it to the right depth (GLM-5.2 live: the sole synth failure was this off-by-one).
-    Invented names only — no target material."""
+    Invented names only - no target material."""
     base = tmp_path / "test" / "poc" / "base"
     base.mkdir(parents=True)
     (base / "DemoBase.sol").write_text("pragma solidity ^0.8.28;\ncontract DemoBase {}", encoding="utf-8")
@@ -505,13 +510,34 @@ def test_fix_import_paths_base_dir_corrects_synth_depth(tmp_path):
             'import { DemoBase } from "../../test/poc/base/DemoBase.sol";\n'
             'contract SynthBase is DemoBase {}')
     synth_dir = tmp_path / "audit" / "poc" / "_synth"
-    fixed, changed = sf._fix_import_paths(code, tmp_path, base_dir=synth_dir)
+    fixed, _matched, changed = sf._fix_import_paths(code, tmp_path, base_dir=synth_dir)
     assert changed is True
     assert 'from "../../../test/poc/base/DemoBase.sol"' in fixed   # up 3, resolves from _synth/
     assert '"../../test/poc/base/DemoBase.sol"' not in fixed        # the off-by-one is gone
     # default base (audit/poc/) leaves the already-correct depth-2 path untouched
-    same, ch2 = sf._fix_import_paths(code, tmp_path)
+    same, _m2, ch2 = sf._fix_import_paths(code, tmp_path)
     assert 'from "../../test/poc/base/DemoBase.sol"' in same and ch2 is False
+
+
+def test_fix_import_paths_prefixes_dot_slash_for_synth_base(tmp_path):
+    """A PoC under audit/poc/ importing bare `_synth/Foo.sol` must become `./_synth/Foo.sol`
+    - solc resolves bare paths from the project root, so the bare form 404s (live H-01)."""
+    synth = tmp_path / "audit" / "poc" / "_synth"
+    synth.mkdir(parents=True)
+    (synth / "SynthBase_H_01.sol").write_text(
+        "pragma solidity ^0.8.28;\nabstract contract SynthBase_H_01 {}", encoding="utf-8")
+    code = (
+        "pragma solidity ^0.8.28;\n"
+        'import { SynthBase_H_01 } from "_synth/SynthBase_H_01.sol";\n'
+        "contract PoC_H_01 is SynthBase_H_01 {}\n"
+    )
+    fixed, matched, changed = sf._fix_import_paths(code, tmp_path)
+    assert matched and changed
+    assert 'from "./_synth/SynthBase_H_01.sol"' in fixed
+    assert 'from "_synth/SynthBase_H_01.sol"' not in fixed
+    # already ./ -relative - idempotent
+    same, _m, ch2 = sf._fix_import_paths(fixed, tmp_path)
+    assert ch2 is False and 'from "./_synth/SynthBase_H_01.sol"' in same
 
 
 def test_revert_hints_quotes_fail_and_finding():
@@ -525,7 +551,7 @@ def test_revert_hints_quotes_fail_and_finding():
 
 # ── Feature 029: trace-grounded exploit-logic feedback ─────────────────────
 # A SYNTHETIC forge -vvv fixture in the REAL forge format (captured from a live -vvv run, then
-# renamed to invented placeholders — no target material). -vvv traces only FAILING tests: the
+# renamed to invented placeholders - no target material). -vvv traces only FAILING tests: the
 # passing test below has NO Traces block, exactly as forge emits.
 _VVV_FIXTURE = """\
 Ran 2 tests for test/Exploit.t.sol:ExploitTest
@@ -593,7 +619,7 @@ def test_revert_hints_folds_trace_and_keeps_prior_shape():
     # No trace → byte-identical to the legacy path (compute the legacy string directly).
     fail_only = "Ran 1 test\n[FAIL: gate blocks the caller] testExploit() (gas: 1)"
     legacy = (
-        "The test compiled and ran, but did NOT pass — this is an EXPLOIT-LOGIC problem, "
+        "The test compiled and ran, but did NOT pass - this is an EXPLOIT-LOGIC problem, "
         "not a compile error:\n" + "[FAIL: gate blocks the caller] testExploit() (gas: 1)"[:800] +
         f"\n\nRe-read the finding and fix the SEQUENCE/PRECONDITIONS, not just syntax:\n"
         f"Title: {task['title']}\nDescription: {task['description']}\n"
@@ -717,18 +743,18 @@ _SPURIOUS_REPORT = '''
 ---
 [2] **2. `metaKey` nonce uses the wrong reserved slot**
 
-(no fix block — a low-severity finding)
+(no fix block - a low-severity finding)
 ---
 [3] **3. `FooPairProvider` discards the wrong oracle observations**
 
-(no fix block — a low-severity finding)
+(no fix block - a low-severity finding)
 ---
 '''
 
 
 def test_extract_fix_refuses_generic_only_overlap():
     """A finding whose title shares only SHORT generic words (`checks`, `wrong`, `owner`)
-    with a diff-carrying section — but no finding-specific anchor — gets None, not that
+    with a diff-carrying section - but no finding-specific anchor - gets None, not that
     section's diff. `wrong` is in every heading (generic); `owner`/`checks` are short."""
     spurious = {"id": "L-99", "title": "guard checks the wrong owner on every call"}
     assert pqr.extract_fix_for_finding(_SPURIOUS_REPORT, spurious) is None
@@ -736,14 +762,14 @@ def test_extract_fix_refuses_generic_only_overlap():
 
 def test_extract_fix_matches_on_distinctive_identifier():
     """The finding that actually owns the section (shares its long, rare identifier
-    `finalizeWithFee`) still gets its diff — hardening rejects noise, not real matches."""
+    `finalizeWithFee`) still gets its diff - hardening rejects noise, not real matches."""
     real = {"id": "H-01", "title": "`finalizeWithFee` checks the wrong owner cap"}
     fix = pqr.extract_fix_for_finding(_SPURIOUS_REPORT, real)
     assert fix is not None and "expected_owner" in fix
 
 
 def test_extract_fix_no_diff_section_is_none_not_borrowed():
-    """A low-severity finding that matches its OWN (diff-less) section returns None —
+    """A low-severity finding that matches its OWN (diff-less) section returns None -
     it must not fall through to a different finding's diff."""
     meta = {"id": "L-03", "title": "`metaKey` nonce uses the wrong reserved slot"}
     assert pqr.extract_fix_for_finding(_SPURIOUS_REPORT, meta) is None
@@ -793,7 +819,7 @@ _FIX_DIFF = ("--- a/src/A.sol\n+++ b/src/A.sol\n@@ -1,2 +1,3 @@\n"
 
 def test_attach_fixes_pins_both_fixes(tmp_path):
     """Feature 028 FR-003/FR-004: `_attach_fixes` gives a pinned task the SAME two fixes an extracted
-    one gets — `fix` from the report (deterministic) and `fix_patch` from the operator map — so the
+    one gets - `fix` from the report (deterministic) and `fix_patch` from the operator map - so the
     pinned path can't drift from the extracted one. Shared by extract_tasks and load_pinned_tasks."""
     report = "[88] **1. Reentrancy in withdraw**\n```diff\n--- a/V.sol\n+++ b/V.sol\n@@ -1 +1 @@\n-x\n+y\n```\n"
     raw = [{"id": "1", "title": "Reentrancy in withdraw", "location": "V.withdraw", "description": "d"}]
@@ -807,7 +833,7 @@ def test_attach_fixes_pins_both_fixes(tmp_path):
 
 def test_load_pinned_tasks_reads_file_and_attaches(tmp_path):
     """Feature 028 FR-001/FR-002: load_pinned_tasks reads the `_extracted_tasks.json`-shaped file
-    and returns attached findings — no model call."""
+    and returns attached findings - no model call."""
     report = tmp_path / "r.md"; report.write_text("[88] **1. T**\n", encoding="utf-8")
     tasks = tmp_path / "tasks.json"
     tasks.write_text('[{"id":"1","title":"T","location":"L","description":"d"}]', encoding="utf-8")
@@ -817,7 +843,7 @@ def test_load_pinned_tasks_reads_file_and_attaches(tmp_path):
 
 def test_attach_fixes_passes_through_optional_class(tmp_path):
     """Feature 037 G1: a pinned task MAY carry `class` (or `finding_class`); it is preserved as
-    `finding_class` so a per-model measurement is class-stratifiable (035 FR-018). Absent ⇒ "" — a
+    `finding_class` so a per-model measurement is class-stratifiable (035 FR-018). Absent ⇒ "" - a
     class-unlabelled battery still loads byte-identically to before (back-compatible)."""
     report = "[88] **1. T**\n"
     # accepts `class`
@@ -885,7 +911,7 @@ def test_mutation_verify_verdicts(tmp_path, monkeypatch):
 
 def test_mutation_verify_unavailable(tmp_path, monkeypatch):
     """FR-005/FR-006: no fix / diff won't apply / patched won't build / infra error
-    all return 'unavailable' — never a downgrade."""
+    all return 'unavailable' - never a downgrade."""
     proj = _mut_project(tmp_path)
     events = []
 
@@ -917,7 +943,7 @@ def test_mutation_verify_unavailable(tmp_path, monkeypatch):
 
 def test_mutation_verify_operator_patch_precedence(tmp_path, monkeypatch):
     """Feature 025 US2 (FR-004/FR-005): an operator `fix_patch` is used AS-IS and wins over the
-    report's `fix`. Here the operator patch applies and the report `fix` would not — proving the
+    report's `fix`. Here the operator patch applies and the report `fix` would not - proving the
     operator's was the one taken."""
     proj = _mut_project(tmp_path)
     events = []
@@ -939,7 +965,7 @@ def test_mutation_verify_operator_patch_failed(tmp_path, monkeypatch):
 
 
 def test_fix_patch_inside_repo_rejected(tmp_path):
-    """Feature 025 FR-015: an operator patch path INSIDE the agent repo is rejected — patches are
+    """Feature 025 FR-015: an operator patch path INSIDE the agent repo is rejected - patches are
     target-specific material and must live outside. External paths parse fine."""
     import pytest
     inside = pqr._AGENT_ROOT / "some_fix.patch"
@@ -953,7 +979,7 @@ def test_fix_patch_inside_repo_rejected(tmp_path):
 
 def test_mutation_verify_reconstruction_refused(tmp_path, monkeypatch):
     """Feature 025 US4: a report `fix` that is an ILLUSTRATION whose anchor cannot be resolved →
-    ('unavailable','reconstruction_refused'), and the refusal is logged — never a wrong 'verified'."""
+    ('unavailable','reconstruction_refused'), and the refusal is logged - never a wrong 'verified'."""
     proj = _mut_project(tmp_path)
     events = []
     # illustrative block (no line numbers) whose anchor `struct Ghost {` exists nowhere in src/A.sol
@@ -995,7 +1021,7 @@ _COMPILE_FAIL = type("R", (), {"passed": False, "exit_code": 1,
 
 
 def test_synthesize_scaffold_accepts_compiling(tmp_path, monkeypatch):
-    """SC-001/FR-004: a synthesized base that COMPILES is accepted — returned as a
+    """SC-001/FR-004: a synthesized base that COMPILES is accepted - returned as a
     Path under the untracked audit area, with a `scaffold_synthesized` event."""
     proj = _synth_project(tmp_path)
     monkeypatch.setattr(pqr, "run_tests", lambda *a, **k: _COMPILE_OK)
@@ -1025,13 +1051,15 @@ def test_synthesize_smoke_uses_relative_import(tmp_path, monkeypatch):
         proj, {"id": "H-01", "title": "t", "location": "Foo", "description": "d"},
         ["Foo"], "abstract contract ExistingBase {}", None,
         _FakeGenClient(_SYNTH_BASE_CODE), object(), [].append)
-    assert 'from "./_synth/SynthBase_H_01.sol"' in captured["smoke"]  # ./-relative, resolvable
+    assert 'from "./_runs/' in captured["smoke"] and "SynthBase_H_01.sol" in captured["smoke"]
+    assert captured["smoke"].count('from "./') >= 1
     assert 'from "_synth/' not in captured["smoke"]                    # never the bare form
+    assert 'from "_runs/' not in captured["smoke"]                     # must be ./ relative
 
 
 def test_synthesize_writes_only_audit_area(tmp_path, monkeypatch):
     """FR-006/SC-004: tracked source is unchanged; the smoke test is cleaned up; a
-    rejected base is removed."""
+    rejected base never lands in live `_synth/` (evidence stays under `_runs/`)."""
     proj = _synth_project(tmp_path)
     src_before = (proj / "contracts" / "Foo.sol").read_text()
     monkeypatch.setattr(pqr, "run_tests", lambda *a, **k: _COMPILE_FAIL)
@@ -1039,35 +1067,107 @@ def test_synthesize_writes_only_audit_area(tmp_path, monkeypatch):
     path = pqr.synthesize_scaffold(
         proj, {"id": "H-01", "title": "t", "location": "Foo", "description": "d"},
         ["Foo"], "", None, _FakeGenClient(_SYNTH_BASE_CODE), object(), events.append)
-    assert path is None  # didn't compile → discarded
+    assert path is None  # didn't compile → not promoted
     assert (proj / "contracts" / "Foo.sol").read_text() == src_before  # tracked src untouched
     assert not (proj / "audit" / "poc" / "_synth_smoke.t.sol").exists()  # smoke cleaned up
-    assert not (proj / "audit" / "poc" / "_synth" / "SynthBase_H_01.sol").exists()  # rejected base removed
+    assert not (proj / "audit" / "poc" / "_synth" / "SynthBase_H_01.sol").exists()  # live untouched
 
 
 def test_synthesize_preserves_rejected_base_and_says_why(tmp_path, monkeypatch):
     """Observability: when synthesis gives up, (a) it says WHY the deterministic repair stopped
     (`scaffold_repair_exhausted` naming the fixers consulted), and (b) the rejected base is PRESERVED
-    as an inert `.rejected` file instead of being deleted. Deleting it destroyed the only artifact
-    that explains a repair which should have fired but did not (hit live on GLM-5.2)."""
+    under `_runs/<run_id>/` as an inert `.rejected` file - never overwriting live `_synth/`."""
     proj = _synth_project(tmp_path)
     monkeypatch.setattr(pqr, "run_tests", lambda *a, **k: _COMPILE_FAIL)
     events = []
     path = pqr.synthesize_scaffold(
         proj, {"id": "H-01", "title": "t", "location": "Foo", "description": "d"},
-        ["Foo"], "", None, _FakeGenClient(_SYNTH_BASE_CODE), object(), events.append)
+        ["Foo"], "", None, _FakeGenClient(_SYNTH_BASE_CODE), object(), events.append,
+        run_id="testrun1")
 
-    assert path is None                                              # still rejected — bar unchanged
+    assert path is None                                              # still rejected - bar unchanged
     synth_dir = proj / "audit" / "poc" / "_synth"
-    assert not (synth_dir / "SynthBase_H_01.sol").exists()           # never leave a compilable .sol
-    rejected = synth_dir / "SynthBase_H_01.sol.rejected"
+    assert not (synth_dir / "SynthBase_H_01.sol").exists()           # never leave a live .sol on fail
+    rejected = proj / "audit" / "poc" / "_runs" / "testrun1" / "SynthBase_H_01.sol.rejected"
     assert rejected.exists() and "SynthBase_H_01" in rejected.read_text()   # evidence kept, inert
     names = [e["event"] for e in events]
     assert "scaffold_repair_exhausted" in names                      # the give-up is no longer silent
     ex = next(e for e in events if e["event"] == "scaffold_repair_exhausted")
-    assert set(ex["consulted"]) == {"import_paths", "nested_imports", "address_interface"}
+    assert set(r["name"] for r in ex["fixers"]) == {
+        "import_paths", "nested_imports", "undeclared_import", "address_interface"}
+    assert ex["cause"] in ("repair_exhausted:resolvable", "repair_exhausted:unresolvable")
     failed = next(e for e in events if e["event"] == "scaffold_synthesis_failed")
     assert failed["rejected_base"].endswith(".rejected")             # log points at the evidence
+    assert failed["cause"] == ex["cause"]                            # terminal carries the same split
+    assert failed["reason"] == "repair_exhausted"
+
+
+def test_synthesize_live_accepted_survives_later_fail(tmp_path, monkeypatch):
+    """Promote-only: a prior live accepted base is not destroyed when a later synth attempt fails."""
+    proj = _synth_project(tmp_path)
+    live = proj / "audit" / "poc" / "_synth" / "SynthBase_H_01.sol"
+    live.parent.mkdir(parents=True, exist_ok=True)
+    live.write_text("// ACCEPTED\npragma solidity ^0.8.28;\nabstract contract SynthBase_H_01 {}\n",
+                    encoding="utf-8")
+    monkeypatch.setattr(pqr, "run_tests", lambda *a, **k: _COMPILE_FAIL)
+    path = pqr.synthesize_scaffold(
+        proj, {"id": "H-01", "title": "t", "location": "Foo", "description": "d"},
+        ["Foo"], "", None, _FakeGenClient(_SYNTH_BASE_CODE), object(), [].append,
+        run_id="failrun")
+    assert path is None
+    assert live.exists() and "ACCEPTED" in live.read_text()
+    rejected = proj / "audit" / "poc" / "_runs" / "failrun" / "SynthBase_H_01.sol.rejected"
+    assert rejected.exists()
+
+
+def test_synthesize_reuses_live_base_without_model_call(tmp_path, monkeypatch):
+    """A live base that already provides missing_types is returned without a model call
+    (and without a synthesis_attempt terminal - reuse must not inflate synth rates)."""
+    proj = _synth_project(tmp_path)
+    live = proj / "audit" / "poc" / "_synth" / "SynthBase_H_01.sol"
+    live.parent.mkdir(parents=True, exist_ok=True)
+    live.write_text(
+        "// SPDX-License-Identifier: MIT\npragma solidity ^0.8.28;\n"
+        "abstract contract SynthBase_H_01 {\n"
+        "    Foo internal sharesCooldown;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    class _Boom:
+        def generate(self, *a, **k):
+            raise AssertionError("model must not be called on reuse")
+
+    events = []
+    path = pqr.synthesize_scaffold(
+        proj, {"id": "H-01", "title": "t", "location": "Foo", "description": "d"},
+        ["Foo"], "", None, _Boom(), object(), events.append, run_id="reuse1")
+    assert path == live
+    assert any(e["event"] == "scaffold_reused" for e in events)
+    assert not any(e.get("terminal") and e.get("level") == "synthesis_attempt" for e in events)
+
+
+def test_synthesize_no_solc_is_toolchain_not_repair_exhausted(tmp_path, monkeypatch):
+    """'no compiler versions available' must be no_build:toolchain (harness-infra), not
+    repair_exhausted:unresolvable (synth-model) - otherwise capability smoke launders infra."""
+    proj = _synth_project(tmp_path)
+    no_solc = type("R", (), {
+        "passed": False, "exit_code": 1, "stdout": "",
+        "stderr": "Error: Found Solidity sources, but no compiler versions are available for it\n",
+    })()
+    monkeypatch.setattr(pqr, "run_tests", lambda *a, **k: no_solc)
+    events = []
+    path = pqr.synthesize_scaffold(
+        proj, {"id": "H-01", "title": "t", "location": "Foo", "description": "d"},
+        ["Foo"], "", None, _FakeGenClient(_SYNTH_BASE_CODE), object(), events.append,
+        run_id="nosolc")
+    assert path is None
+    terms = [e for e in events if e.get("terminal") and e.get("level") == "synthesis_attempt"]
+    assert len(terms) == 1
+    assert terms[0]["cause"] == "no_build:toolchain"
+    assert terms[0]["nature"] == "harness-infra"
+    assert terms[0]["reason"] == "no_build"
+    assert not any(e["event"] == "scaffold_repair_exhausted" for e in events)
 
 
 def test_synthesize_scaffold_failure_paths(tmp_path, monkeypatch):
@@ -1076,12 +1176,13 @@ def test_synthesize_scaffold_failure_paths(tmp_path, monkeypatch):
     proj = _synth_project(tmp_path)
     task = {"id": "H-01", "title": "t", "location": "Foo", "description": "d"}
 
-    # won't compile → no_build
+    # won't compile → repair_exhausted (no fixer matches a bare 7576) / terminal cause is the split
     monkeypatch.setattr(pqr, "run_tests", lambda *a, **k: _COMPILE_FAIL)
     ev = []
     assert pqr.synthesize_scaffold(proj, task, ["Foo"], "", None,
                                    _FakeGenClient(_SYNTH_BASE_CODE), object(), ev.append) is None
-    assert ev[-1]["reason"] == "no_build"
+    assert ev[-1]["reason"] == "repair_exhausted"
+    assert ev[-1]["cause"].startswith("repair_exhausted:")
 
     # model returns non-Solidity → no_output (run_tests never reached)
     ev = []
@@ -1111,7 +1212,7 @@ class _FakeVersionedTracer:
 
 
 # ── Feature 031: harden scaffold synthesis (deterministic repair pass + 9553) ──
-# Invented names only — no target material.
+# Invented names only - no target material.
 
 def _forge_9553(typ, path, line):
     """A no-build forge result whose 9553 error names `typ` and points at `line` (real format)."""
@@ -1133,19 +1234,19 @@ def test_fix_address_interface_wraps_flagged_line():
             "        other.keep(address(y));\n"           # 6  <- NOT flagged
             "    }\n}\n")                                  # 7-8
     forge = _forge_9553("IThing", "audit/poc/_synth/SynthBase_X.sol", 5).stdout
-    fixed, changed = sf._fix_address_interface(code, forge)
+    fixed, _matched, changed = sf._fix_address_interface(code, forge)
     assert changed is True
     assert "reg.configure(IThing(address(thing)));" in fixed          # flagged line wrapped
     assert "other.keep(address(y));" in fixed                          # unflagged line untouched
-    fixed2, changed2 = sf._fix_address_interface(fixed, forge)        # idempotent
-    assert changed2 is False and fixed2 == fixed
+    fixed2, matched2, changed2 = sf._fix_address_interface(fixed, forge)        # idempotent
+    assert matched2 is True and changed2 is False and fixed2 == fixed
 
 
 def test_fix_address_interface_noop_without_9553():
     """FR-005: no 9553 in the forge output → the code is returned unchanged."""
     code = "contract C { function f() public { g(address(x)); } }"
-    fixed, changed = sf._fix_address_interface(code, "Compiler run failed:\nError (7576): Undeclared.")
-    assert changed is False and fixed == code
+    fixed, matched, changed = sf._fix_address_interface(code, "Compiler run failed:\nError (7576): Undeclared.")
+    assert matched is False and changed is False and fixed == code
 
 
 def test_targeted_hints_9553_rule():
@@ -1175,7 +1276,7 @@ _SYNTH_BAD = ("// SPDX-License-Identifier: MIT\n"          # 1
 
 def test_synth_repair_accepts_after_deterministic_fix(tmp_path, monkeypatch):
     """SC-001/SC-005: a base that fails 9553 then compiles after the deterministic fix is ACCEPTED,
-    and the repair makes NO extra model call (client.generate called exactly once — the generation)."""
+    and the repair makes NO extra model call (client.generate called exactly once - the generation)."""
     (tmp_path / "audit" / "poc").mkdir(parents=True)
     results = [_forge_9553("IThing", "audit/poc/_synth/SynthBase_X.sol", 5), _COMPILE_OK]
     monkeypatch.setattr(pqr, "run_tests", lambda *a, **k: results.pop(0))
@@ -1202,13 +1303,13 @@ def test_synth_repair_early_stops_on_no_fix(tmp_path, monkeypatch):
     path = pqr.synthesize_scaffold(tmp_path, _SYNTH_TASK, ["Foo"], "", None,
                                    _CountingSynthClient(_SYNTH_BAD), object(), events.append)
     assert path is None
-    assert calls["n"] == 1                                         # early stop — not SYNTH_REPAIR_ROUNDS
+    assert calls["n"] == 1                                         # early stop - not SYNTH_REPAIR_ROUNDS
     assert events[-1]["event"] == "scaffold_synthesis_failed"
 
 
 def test_synth_repair_bounded_by_rounds(tmp_path, monkeypatch):
     """SC-002 / A2 case (a): a base fixable each round but never compiling runs AT MOST
-    SYNTH_REPAIR_ROUNDS builds, then rejects — the bound holds."""
+    SYNTH_REPAIR_ROUNDS builds, then rejects - the bound holds."""
     (tmp_path / "audit" / "poc").mkdir(parents=True)
     # a base with a distinct wrappable line per round, so each round changes the code and continues
     lines = ["// SPDX-License-Identifier: MIT", "pragma solidity ^0.8.28;", "abstract contract SynthBase_X {",
@@ -1277,7 +1378,7 @@ def test_call_with_retry_reraises_after_exhausting():
 
 
 # ── Feature 032: deterministic compile-fixers (auto-import undeclared) ──────
-# Invented names only — no target material.
+# Invented names only - no target material.
 
 def _undeclared_block(name, code="7576"):
     """A SYNTHETIC forge 7576/7920 block with `name` under the caret (real forge shape)."""
@@ -1295,44 +1396,67 @@ _UND_CODE = ("// SPDX-License-Identifier: MIT\npragma solidity ^0.8.28;\n"
 
 def test_fix_undeclared_import_adds_known_symbol():
     """FR-001: an undeclared name the file-map resolves is auto-imported with its real path."""
-    out, ch = sf._fix_undeclared_import(_UND_CODE, _undeclared_block("Widget"),
-                                         "Widget: contracts/Widget.sol")
-    assert ch is True and 'import { Widget } from "contracts/Widget.sol";' in out
+    out, matched, applied = sf._fix_undeclared_import(
+        _UND_CODE, _undeclared_block("Widget"), "Widget: contracts/Widget.sol")
+    assert matched and applied and 'import { Widget } from "contracts/Widget.sol";' in out
 
 
 def test_fix_undeclared_import_handles_7920_wording():
     """FR-001: the 7920 'Identifier not found' wording also triggers the import."""
-    out, ch = sf._fix_undeclared_import(_UND_CODE, _undeclared_block("Widget", "7920"),
-                                         "Widget: contracts/Widget.sol")
-    assert ch is True and "import { Widget }" in out
+    out, matched, applied = sf._fix_undeclared_import(
+        _UND_CODE, _undeclared_block("Widget", "7920"), "Widget: contracts/Widget.sol")
+    assert matched and applied and "import { Widget }" in out
 
 
 def test_fix_undeclared_import_skips_unknown_anti_invention():
     """FR-003: a name the file-map does NOT resolve is NEVER imported (anti-invention)."""
-    out, ch = sf._fix_undeclared_import(_UND_CODE, _undeclared_block("Widget"),
-                                         "Other: contracts/Other.sol")
-    assert ch is False and out == _UND_CODE
+    out, matched, applied = sf._fix_undeclared_import(
+        _UND_CODE, _undeclared_block("Widget"), "Other: contracts/Other.sol")
+    assert not matched and not applied and out == _UND_CODE
 
 
 def test_fix_undeclared_import_mix_known_and_unknown():
     """FR-001/FR-003: only the known name is imported; the unknown is left for the model."""
     forge = _undeclared_block("Widget") + _undeclared_block("Bogus")
-    out, ch = sf._fix_undeclared_import(_UND_CODE, forge, "Widget: contracts/Widget.sol")
-    assert ch is True and "import { Widget }" in out and "import { Bogus }" not in out
+    out, matched, applied = sf._fix_undeclared_import(
+        _UND_CODE, forge, "Widget: contracts/Widget.sol")
+    assert matched and applied and "import { Widget }" in out and "import { Bogus }" not in out
 
 
 def test_fix_undeclared_import_idempotent():
     """FR-002: a name already imported is not re-added."""
     fm = "Widget: contracts/Widget.sol"
-    out, _ = sf._fix_undeclared_import(_UND_CODE, _undeclared_block("Widget"), fm)
-    out2, ch2 = sf._fix_undeclared_import(out, _undeclared_block("Widget"), fm)
-    assert ch2 is False and out2 == out
+    out, _, _ = sf._fix_undeclared_import(_UND_CODE, _undeclared_block("Widget"), fm)
+    out2, matched2, applied2 = sf._fix_undeclared_import(out, _undeclared_block("Widget"), fm)
+    assert not matched2 and not applied2 and out2 == out
 
 
 def test_fix_undeclared_import_noop_without_file_map():
     """FR-007: no file-map (no index) → the transform is a no-op (never an error)."""
-    out, ch = sf._fix_undeclared_import(_UND_CODE, _undeclared_block("Widget"), "")
-    assert ch is False and out == _UND_CODE
+    out, matched, applied = sf._fix_undeclared_import(
+        _UND_CODE, _undeclared_block("Widget"), "")
+    assert not matched and not applied and out == _UND_CODE
+
+
+def test_fix_undeclared_import_copies_from_parent_scaffold():
+    """Synth secondary authority: name absent from file_map but present as a named import
+    in the parent scaffold is copied (no lib/remapping search)."""
+    existing = ('import { Widget } from "@deps/Widget.sol";\n'
+                "abstract contract Parent {}\n")
+    out, matched, applied = sf._fix_undeclared_import(
+        _UND_CODE, _undeclared_block("Widget", "7920"), "", existing=existing)
+    assert matched and applied
+    assert 'import { Widget } from "@deps/Widget.sol";' in out
+
+
+def test_fix_undeclared_import_file_map_wins_over_scaffold():
+    existing = 'import { Widget } from "@deps/Wrong.sol";\n'
+    out, matched, applied = sf._fix_undeclared_import(
+        _UND_CODE, _undeclared_block("Widget"),
+        "Widget: contracts/Widget.sol", existing=existing)
+    assert matched and applied
+    assert 'from "contracts/Widget.sol"' in out
+    assert "@deps/Wrong" not in out
 
 
 def test_resolve_prompt_fallback_when_disabled():
@@ -1416,3 +1540,526 @@ def test_extract_tasks_all_empty_raises_model_error(tmp_path):
     client = _FakeExtractClient(["", "", ""])
     with pytest.raises(pqr.OpenRouterUnavailable):
         pqr.extract_tasks(client, rep, log=[].append)
+
+
+# ── Feature 040 US1: run-scoped attribution via _stamp (T008) ────────────────
+def test_stamp_injects_run_scoped_fields():
+    e = pqr._stamp({"event": "grounding"}, run_id="R1", model="m/x", code_version="abc1234")
+    assert e["run_id"] == "R1"
+    assert e["model"] == "m/x"
+    assert e["code_version"] == "abc1234"
+    assert isinstance(e["ts"], float)
+    assert e["event"] == "grounding"
+
+
+def test_stamp_is_run_scoped_only_no_terminal_or_finding():
+    # _stamp sets ONLY run-scoped fields - never finding_id/terminal/cause/nature (those
+    # are per-call-site). A non-terminal event must not gain a `terminal` field here.
+    e = pqr._stamp({"event": "provider"}, run_id="R1", model="m/x", code_version="c")
+    assert "finding_id" not in e
+    assert "terminal" not in e
+    assert "cause" not in e
+
+
+def test_stamp_entry_fields_win_over_injected():
+    e = pqr._stamp({"event": "x", "model": "per-case/model"}, run_id="R1", model="run/model")
+    assert e["model"] == "per-case/model"   # a call site may override
+
+
+def test_stamp_empty_context_is_backward_compatible():
+    e = pqr._stamp({"event": "x"})
+    assert set(e) == {"ts", "event"}        # no attribution keys when none supplied
+
+
+def test_mint_run_id_shape_and_uniqueness():
+    a, b = pqr._mint_run_id(), pqr._mint_run_id()
+    assert a.endswith(tuple("0123456789abcdef")) and "Z-" in a
+    assert a != b                            # random suffix disambiguates
+
+
+def test_code_version_is_a_string():
+    assert isinstance(pqr._code_version(), str)
+
+
+# ── Feature 040 US1: exactly one terminal per accounting unit (T009) ─────────
+import scripts.scaffold_causes as _sc  # noqa: E402  (target-free shared taxonomy)
+
+
+def _terminals(events, level):
+    return [e for e in events if e.get("terminal") and e.get("level") == level]
+
+
+def test_synth_emits_exactly_one_synthesis_terminal_on_success(tmp_path, monkeypatch):
+    """A synthesized (compiling) base closes its synthesis attempt in exactly ONE terminal:
+    level=synthesis_attempt, attempt_seq=1, cause=synthesized, ok:true (success is not a nature)."""
+    proj = _synth_project(tmp_path)
+    monkeypatch.setattr(pqr, "run_tests", lambda *a, **k: _COMPILE_OK)
+    events = []
+    pqr.synthesize_scaffold(
+        proj, {"id": "H-01", "title": "t", "location": "Foo", "description": "d"},
+        ["Foo"], "abstract contract ExistingBase {}", None,
+        _FakeGenClient(_SYNTH_BASE_CODE), object(), events.append)
+    terms = _terminals(events, "synthesis_attempt")
+    assert len(terms) == 1
+    t = terms[0]
+    assert t["attempt_seq"] == 1 and t["cause"] == "synthesized"
+    assert t.get("ok") is True and "nature" not in t
+
+
+def test_synth_emits_exactly_one_synthesis_terminal_on_failure(tmp_path, monkeypatch):
+    """A non-compiling base closes in exactly ONE synthesis terminal. When repair applies
+    nothing, the cause is `repair_exhausted:*` (FR-001c split); the diagnostic
+    `scaffold_repair(_exhausted)` events on the way carry NO `terminal` field."""
+    proj = _synth_project(tmp_path)
+    monkeypatch.setattr(pqr, "run_tests", lambda *a, **k: _COMPILE_FAIL)
+    events = []
+    pqr.synthesize_scaffold(
+        proj, {"id": "H-01", "title": "t", "location": "Foo", "description": "d"},
+        ["Foo"], "", None, _FakeGenClient(_SYNTH_BASE_CODE), object(), events.append)
+    terms = _terminals(events, "synthesis_attempt")
+    assert len(terms) == 1
+    assert terms[0]["cause"] in _sc.SYNTHESIS_CAUSES
+    assert terms[0]["cause"].startswith("repair_exhausted:")
+    assert _sc.cause_nature(terms[0]["cause"]) == terms[0]["nature"]
+    # non-terminal diagnostics stay non-terminal
+    for e in events:
+        if e["event"] in ("scaffold_repair", "scaffold_repair_exhausted", "scaffold_insufficient"):
+            assert "terminal" not in e
+
+
+def test_synth_repair_exhausted_resolvable_vs_unresolvable(tmp_path, monkeypatch):
+    """T031/US4: matched&&!applied → repair_exhausted:resolvable (harness-infra);
+    !matched → repair_exhausted:unresolvable (synth-model). No laundering across the line."""
+    proj = _synth_project(tmp_path)
+
+    # Unresolvable: generic 7576, no fixer domain matches → synth-model.
+    monkeypatch.setattr(pqr, "run_tests", lambda *a, **k: _COMPILE_FAIL)
+    unres_ev = []
+    pqr.synthesize_scaffold(
+        proj, {"id": "H-01", "title": "t", "location": "Foo", "description": "d"},
+        ["Foo"], "", None, _FakeGenClient(_SYNTH_BASE_CODE), object(), unres_ev.append)
+    unres = _terminals(unres_ev, "synthesis_attempt")[0]
+    assert unres["cause"] == "repair_exhausted:unresolvable"
+    assert unres["nature"] == "synth-model"
+
+    # Resolvable: 9553 present but flagged line out of range → address_interface matched&&!applied.
+    bad_9553 = type("R", (), {
+        "passed": False, "exit_code": 1,
+        "stdout": ("Compiler run failed:\n"
+                   "Error (9553): Invalid type for argument in function call. "
+                   "Invalid implicit conversion from address to contract IThing requested.\n"
+                   "  --> audit/poc/_synth/SynthBase_H_01.sol:99:9:\n"),
+        "stderr": "",
+    })()
+    monkeypatch.setattr(pqr, "run_tests", lambda *a, **k: bad_9553)
+    res_ev = []
+    pqr.synthesize_scaffold(
+        proj, {"id": "H-01", "title": "t", "location": "Foo", "description": "d"},
+        ["Foo"], "", None, _FakeGenClient(_SYNTH_BASE_CODE), object(), res_ev.append)
+    res = _terminals(res_ev, "synthesis_attempt")[0]
+    assert res["cause"] == "repair_exhausted:resolvable"
+    assert res["nature"] == "harness-infra"
+    assert res["cause"] != unres["cause"]
+
+
+def test_insufficiency_ladder_no_draft_on_known_insufficient(tmp_path, monkeypatch):
+    """T032/US4 Option-C: after synth fails, never draft on the insufficient base;
+    land base-insufficient (lookup couldn't run) or lookup_failed (lookup ran) - never
+    not_triggered."""
+    import types
+    from sr_agent.eval.tracer import NOOP_TRACER
+
+    proj = _synth_project(tmp_path)
+    (proj / "audit" / "poc").mkdir(parents=True, exist_ok=True)
+    task = {"id": "H-01", "title": "t", "location": "Foo", "description": "d"}
+    drafted = {"n": 0}
+
+    def _fake_synth(*a, **k):
+        log = a[7] if len(a) > 7 else k.get("log")
+        log({"event": "scaffold_synthesis_failed", "finding_id": task["id"], "reason": "no_build",
+             **pqr._terminal_fields("synthesis_attempt", "no_build:code", attempt_seq=1)})
+        return None
+
+    def _boom_draft(*a, **k):
+        drafted["n"] += 1
+        raise AssertionError("draft must not run on a known-insufficient base (FR-011)")
+
+    monkeypatch.setattr(pqr, "scaffold_missing_types", lambda *a, **k: ["Foo"])
+    monkeypatch.setattr(pqr, "synthesize_scaffold", _fake_synth)
+    monkeypatch.setattr(pqr, "draft", _boom_draft)
+    monkeypatch.setattr(pqr, "resolve_scaffold", lambda *a, **k: [])
+    monkeypatch.setattr(pqr, "read_scaffold", lambda *a, **k: "")
+    monkeypatch.setattr(pqr, "resolve_example", lambda *a, **k: None)
+    monkeypatch.setattr(pqr, "read_example", lambda *a, **k: "")
+    monkeypatch.setattr(pqr, "build_callable_api", lambda *a, **k: "")
+
+    args = types.SimpleNamespace(
+        project=proj, test_scaffold="", no_scaffold=True, no_example=True,
+        example_poc="", no_file_map=True, lookup_budget=0, attempts=1, image=None,
+        no_scaffold_synthesis=False,
+    )
+    # Lookup cannot run (no index, budget 0) → base-insufficient.
+    events = []
+    outcome = pqr._process_finding(
+        task, args=args, client=object(), sandbox=object(), log=events.append,
+        symbol_index=None, file_map="", protocol_mode="marker",
+        fork_rpc=None, require_pass_effective=False, poc_dir=proj / "audit" / "poc",
+        tracer=NOOP_TRACER,
+    )
+    assert drafted["n"] == 0
+    assert outcome == "base-insufficient"
+    terms = _terminals(events, "finding_attempt")
+    assert len(terms) == 1
+    assert terms[0]["cause"] == "base-insufficient"
+    assert terms[0]["nature"] == "harness-infra"
+    assert terms[0]["cause"] != "not_triggered"
+
+    # Lookup can run (index + budget) → lookup_failed; still no draft.
+    class _Idx:
+        def lookup(self, name):
+            return []
+
+    args.lookup_budget = 2
+    events2 = []
+    outcome2 = pqr._process_finding(
+        task, args=args, client=object(), sandbox=object(), log=events2.append,
+        symbol_index=_Idx(), file_map="", protocol_mode="marker",
+        fork_rpc=None, require_pass_effective=False, poc_dir=proj / "audit" / "poc",
+        tracer=NOOP_TRACER,
+    )
+    assert drafted["n"] == 0
+    assert outcome2 == "lookup_failed"
+    terms2 = _terminals(events2, "finding_attempt")
+    assert len(terms2) == 1
+    assert terms2[0]["cause"] == "lookup_failed"
+    assert terms2[0]["nature"] == "model"
+    assert any(e.get("stage") == "insufficiency_ladder" for e in events2)
+
+
+def test_synth_no_output_terminal_is_synth_model(tmp_path, monkeypatch):
+    """A model that returns non-Solidity closes in one synthesis terminal cause=no_output:model
+    (synth-model nature) - the synthesis model, not the harness, failed to emit a base."""
+    proj = _synth_project(tmp_path)
+    events = []
+    pqr.synthesize_scaffold(
+        proj, {"id": "H-01", "title": "t", "location": "Foo", "description": "d"},
+        ["Foo"], "", None, _FakeGenClient("sorry, no can do"), object(), events.append)
+    terms = _terminals(events, "synthesis_attempt")
+    assert len(terms) == 1
+    assert terms[0]["cause"] == "no_output:model" and terms[0]["nature"] == "synth-model"
+
+
+class _RaisingGenClient:
+    """A client whose .generate raises a transport error (MODEL_ERRORS) - the call never returns."""
+    def generate(self, prompt, options=None):
+        raise pqr.OpenRouterUnavailable("503 upstream unavailable")
+
+
+def test_synth_transport_crash_is_no_output_crash_not_model(tmp_path, monkeypatch):
+    """US3 (T026/SC-007): a synthesis whose model CALL failed at the transport layer (503/timeout -
+    the call never returned) is `no_output:crash` (harness-infra), DISTINCT from a model that
+    responded with junk (`no_output:model`, synth-model). The two must not launder into each other."""
+    proj = _synth_project(tmp_path)
+    crash_ev, model_ev = [], []
+    pqr.synthesize_scaffold(
+        proj, {"id": "H-01", "title": "t", "location": "Foo", "description": "d"},
+        ["Foo"], "", None, _RaisingGenClient(), object(), crash_ev.append)
+    pqr.synthesize_scaffold(
+        proj, {"id": "H-01", "title": "t", "location": "Foo", "description": "d"},
+        ["Foo"], "", None, _FakeGenClient("sorry, no can do"), object(), model_ev.append)
+    crash = _terminals(crash_ev, "synthesis_attempt")[0]
+    model = _terminals(model_ev, "synthesis_attempt")[0]
+    assert crash["cause"] == "no_output:crash" and crash["nature"] == "harness-infra"
+    assert model["cause"] == "no_output:model" and model["nature"] == "synth-model"
+    assert crash["cause"] != model["cause"]           # no laundering across the model/infra line
+
+
+def test_terminal_fields_ok_vs_nature_are_exclusive():
+    ok = pqr._terminal_fields("synthesis_attempt", "synthesized", attempt_seq=1)
+    assert ok["ok"] is True and "nature" not in ok
+    infra = pqr._terminal_fields("finding_attempt", "base-insufficient")
+    assert infra["nature"] == "harness-infra" and "ok" not in infra
+    budget = pqr._terminal_fields("finding_attempt", "not_attempted:budget")
+    assert "nature" not in budget and "ok" not in budget   # excluded from the share entirely
+
+
+def test_finding_cause_covers_every_runner_outcome():
+    """Every `outcome` string _process_finding can return maps into the finding closed set -
+    so the `task_done` terminal never carries an out-of-set cause (unknown ⇒ unclassified)."""
+    runner_outcomes = {
+        "passed_verified", "unverified_pass", "passed_unchecked", "compiled",
+        "vacuous_pass", "reverted_exhausted", "compile_only_defective", "exhausted",
+        "sandbox_unavailable", "run_error", "draft_failed", "fix_failed",
+        "base-insufficient", "lookup_failed",
+    }
+    for oc in runner_outcomes:
+        assert pqr._finding_cause(oc) in _sc.FINDING_CAUSES
+    assert pqr._finding_cause("some_future_outcome") == "unclassified"
+
+
+# ── Feature 040 US1: budget cut closes every remaining finding (T010) ────────
+def test_budget_skips_emit_not_attempted_for_every_remaining():
+    """A --max-minutes cut must emit a `not_attempted:budget` finding-attempt terminal for EVERY
+    remaining queued finding, so `queued == terminal_emitted` and the classifier cannot publish a
+    share on a silently-shrunken denominator (Top-risk-1)."""
+    remaining = [{"id": "H-05"}, {"id": "H-06"}, {"id": "H-07"}]
+    events = []
+    pqr._emit_budget_skips(events.append, remaining)
+    terms = _terminals(events, "finding_attempt")
+    assert len(terms) == len(remaining)                      # one per remaining finding
+    assert {t["finding_id"] for t in terms} == {"H-05", "H-06", "H-07"}
+    for t in terms:
+        assert t["cause"] == "not_attempted:budget"
+        assert "nature" not in t and "ok" not in t           # excluded from nature_share
+        assert not _sc.in_denominator(t["cause"])            # not counted in `attempted`
+
+
+# ── Feature 042: scaffold precondition completeness (runner wiring) ──────────
+
+_FIX_042 = Path(__file__).resolve().parents[1] / "fixtures" / "scaffold_reachability"
+_GATE_042 = (_FIX_042 / "config_manager_field" / "incomplete" / "Gate.sol").read_text(encoding="utf-8")
+_TRACE_042 = (_FIX_042 / "traces" / "ascii_arrow.txt").read_text(encoding="utf-8")
+
+_SYNTH_DEMO_INCOMPLETE = (
+    "// SPDX-License-Identifier: MIT\npragma solidity ^0.8.28;\n"
+    "abstract contract SynthBase_H_01 is ExistingBase {\n"
+    "    DemoVault internal demoVault;\n"
+    "    function setUpSynth() internal { demoVault = new DemoVault(); }\n"
+    "}\n"
+)
+
+
+def _demo_vault_project(tmp_path: Path) -> Path:
+    (tmp_path / "contracts").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "contracts" / "DemoVault.sol").write_text(_GATE_042, encoding="utf-8")
+    return tmp_path
+
+
+class _SpyGenClient:
+    """Captures prompts passed to generate (feature 042 T022)."""
+    def __init__(self, text):
+        self._text = text
+        self.prompts: list[str] = []
+
+    def generate(self, prompt, options=None):
+        self.prompts.append(prompt)
+        return self._text
+
+
+def _forge_repeat_fail(stdout_extra: str = "") -> object:
+    """Compiled-but-reverted forge result whose trace yields DemoVault::gate."""
+    body = _TRACE_042 + "\nRan 1 test for audit/poc/X.t.sol\n" + stdout_extra
+    return type("R", (), {
+        "passed": False, "exit_code": 1, "stdout": body, "stderr": "",
+    })()
+
+
+def _poc_with_prank(caller: str, method: str = "gate") -> str:
+    return (
+        f'import {{DemoVault}} from "../contracts/DemoVault.sol";\n'
+        f"contract PoC is Base {{\n"
+        f"  function test_x() public {{\n"
+        f"    vm.prank({caller});\n"
+        f"    vault.{method}();\n"
+        f"    assertEq(1, 1);\n"
+        f"  }}\n"
+        f"}}\n"
+    )
+
+
+def _pf_args(project: Path, attempts: int = 4):
+    import types
+    return types.SimpleNamespace(
+        project=project, test_scaffold="", no_scaffold=True, no_example=True,
+        example_poc="", no_file_map=True, lookup_budget=0, attempts=attempts, image=None,
+        no_scaffold_synthesis=False,
+    )
+
+
+def test_042_synthesize_scaffold_prompt_and_reachability_out(tmp_path, monkeypatch):
+    """T022: matching pattern → synthesis extras + reachability_out; non-match → no finding_location."""
+    from scripts import scaffold_reachability as sreach
+
+    # --- matching config_manager_field ---
+    proj = _demo_vault_project(tmp_path / "match")
+    monkeypatch.setattr(pqr, "run_tests", lambda *a, **k: _COMPILE_OK)
+    client = _SpyGenClient(_SYNTH_DEMO_INCOMPLETE)
+    events: list[dict] = []
+    reach_out: list = []
+    task = {
+        "id": "H-01", "title": "t",
+        "location": "DemoVault.sol:gate",
+        "description": "configManager gate blocks caller",
+    }
+    path = pqr.synthesize_scaffold(
+        proj, task, ["DemoVault"], "abstract contract ExistingBase {}", None,
+        client, object(), events.append, reachability_out=reach_out)
+    assert path is not None
+    assert client.prompts, "generate must be called"
+    prompt = client.prompts[0]
+    assert "[DATA START finding_location]" in prompt
+    assert "[DATA START location_source]" in prompt
+    assert "setConfigManager" in prompt
+    assert reach_out, "reachability_out must be extended on incomplete match"
+    assert all(isinstance(c, sreach.ReachabilityCheck) for c in reach_out)
+    assert all(c.status == "incomplete" for c in reach_out)
+    synth_ev = next(e for e in events if e["event"] == "scaffold_synthesized")
+    assert "reachability_checks" in synth_ev
+    assert synth_ev["reachability_checks"][0]["status"] == "incomplete"
+    assert synth_ev["reachability_checks"][0]["protected_call_site"] == {
+        "contract": "DemoVault", "method": "gate",
+    }
+
+    # --- non-matching location (plain Foo, no config-manager pattern) ---
+    nomatch = tmp_path / "nomatch"
+    nomatch.mkdir(parents=True, exist_ok=True)
+    proj2 = _synth_project(nomatch)
+    client2 = _SpyGenClient(_SYNTH_BASE_CODE)
+    events2: list[dict] = []
+    reach2: list = []
+    path2 = pqr.synthesize_scaffold(
+        proj2,
+        {"id": "H-01", "title": "t", "location": "Foo", "description": "d"},
+        ["Foo"], "abstract contract ExistingBase {}", None,
+        client2, object(), events2.append, reachability_out=reach2)
+    assert path2 is not None
+    prompt2 = client2.prompts[0]
+    assert "[DATA START finding_location]" not in prompt2
+    assert reach2 == []
+    synth_ev2 = next(e for e in events2 if e["event"] == "scaffold_synthesized")
+    assert "reachability_checks" not in synth_ev2
+
+
+def test_042_process_finding_repeat_hint(tmp_path, monkeypatch):
+    """T042: streak fires with hypothesis / corroborated forms; no-missing-types has no NameError."""
+    from sr_agent.eval.tracer import NOOP_TRACER
+    from scripts import scaffold_reachability as sreach
+
+    proj = _demo_vault_project(tmp_path)
+    (proj / "audit" / "poc").mkdir(parents=True, exist_ok=True)
+    task = {
+        "id": "H-01", "title": "repeat",
+        "location": "DemoVault.sol:gate",
+        "description": "gate blocked",
+    }
+    fail = _forge_repeat_fail()
+    # attempts=4 so attempt 3 (streak==3) still enters the fix/hint path
+    pocs = [_poc_with_prank(c) for c in ("alice", "bob", "carol", "dave")]
+
+    def _drive(*, missing, synth_fn, drafts, fixes, results, attempts=4):
+        draft_q, fix_q, res_q = list(drafts), list(fixes), list(results)
+        monkeypatch.setattr(pqr, "scaffold_missing_types", lambda *a, **k: missing)
+        monkeypatch.setattr(pqr, "synthesize_scaffold", synth_fn)
+        monkeypatch.setattr(pqr, "draft", lambda *a, **k: draft_q.pop(0))
+        monkeypatch.setattr(pqr, "fix", lambda *a, **k: fix_q.pop(0))
+        monkeypatch.setattr(pqr, "run_tests", lambda *a, **k: res_q.pop(0))
+        monkeypatch.setattr(pqr, "resolve_scaffold", lambda *a, **k: [])
+        monkeypatch.setattr(pqr, "read_scaffold", lambda *a, **k: "")
+        monkeypatch.setattr(pqr, "resolve_example", lambda *a, **k: None)
+        monkeypatch.setattr(pqr, "read_example", lambda *a, **k: "")
+        monkeypatch.setattr(pqr, "build_callable_api", lambda *a, **k: "")
+        events: list[dict] = []
+        pqr._process_finding(
+            task, args=_pf_args(proj, attempts), client=object(), sandbox=object(),
+            log=events.append, symbol_index=None, file_map="", protocol_mode="marker",
+            fork_rpc=None, require_pass_effective=True, poc_dir=proj / "audit" / "poc",
+            tracer=NOOP_TRACER,
+        )
+        return events
+
+    # (1) no missing types → hypothesis_confirmed, no NameError
+    def _boom_synth(*a, **k):
+        raise AssertionError("synthesize_scaffold must not run when missing_types is empty")
+
+    events = _drive(
+        missing=[], synth_fn=_boom_synth,
+        drafts=[pocs[0]], fixes=pocs[1:], results=[fail] * 4)
+    hints = [e for e in events if e["event"] == "repeat_revert_hint"]
+    assert hints, "repeat_revert_hint must fire after streak reaches REPEAT_THRESHOLD"
+    assert hints[0]["form"] == "hypothesis_confirmed"
+    assert hints[0]["confirmed_caller_change"] is True
+    assert "regardless of caller" in hints[0]["hints"]
+
+    # (2) synth seeds incomplete matching CallSite → corroborated
+    def _seed_synth(*a, **k):
+        out = k.get("reachability_out")
+        if out is not None:
+            out.append(sreach.ReachabilityCheck(
+                pattern="config_manager_field",
+                status="incomplete",
+                missing=["setConfigManager"],
+                protected_call_site=sreach.CallSite("DemoVault", "gate"),
+            ))
+        live = proj / "audit" / "poc" / "_synth" / "SynthBase_H_01.sol"
+        live.parent.mkdir(parents=True, exist_ok=True)
+        live.write_text("// SPDX-License-Identifier: MIT\npragma solidity ^0.8.28;\n"
+                        "abstract contract SynthBase_H_01 {}\n", encoding="utf-8")
+        return live
+
+    events2 = _drive(
+        missing=["DemoVault"], synth_fn=_seed_synth,
+        drafts=[pocs[0]], fixes=pocs[1:], results=[fail] * 4)
+    hints2 = [e for e in events2 if e["event"] == "repeat_revert_hint"]
+    assert hints2 and hints2[0]["form"] == "corroborated"
+    assert "setConfigManager" in hints2[0]["hints"]
+
+
+def test_042_process_finding_mechanism_regression(tmp_path, monkeypatch):
+    """T051: compiled attempt drops a previously-exercised method → mechanism_regression_hint."""
+    from sr_agent.eval.tracer import NOOP_TRACER
+
+    proj = tmp_path
+    (proj / "contracts").mkdir()
+    (proj / "audit" / "poc").mkdir(parents=True, exist_ok=True)
+    task = {
+        "id": "H-02", "title": "mech",
+        "location": "DemoVault.coverage / DemoVault.cancel",
+        "description": "coverage and cancel matter",
+    }
+
+    def _poc(methods: list[str]) -> str:
+        calls = "\n".join(f"    vault.{m}();" for m in methods)
+        return (
+            'import {DemoVault} from "../contracts/DemoVault.sol";\n'
+            "contract PoC is Base {\n"
+            "  function test_x() public {\n"
+            f"{calls}\n"
+            "    assertEq(1, 1);\n"
+            "  }\n"
+            "}\n"
+        )
+
+    fail = type("R", (), {
+        "passed": False, "exit_code": 1,
+        "stdout": "Ran 1 test for audit/poc/H_02.t.sol\n[FAIL: revert] test_x()",
+        "stderr": "",
+    })()
+    # attempt1+2 call both; attempt3 drops cancel → reminder on the fix path (attempts=4)
+    drafts = [_poc(["coverage", "cancel"])]
+    fixes = [
+        _poc(["coverage", "cancel"]),
+        _poc(["coverage"]),           # drops cancel - fires reminder when tested
+        _poc(["coverage"]),
+    ]
+    draft_q, fix_q, res_q = list(drafts), list(fixes), [fail] * 4
+    monkeypatch.setattr(pqr, "scaffold_missing_types", lambda *a, **k: [])
+    monkeypatch.setattr(pqr, "draft", lambda *a, **k: draft_q.pop(0))
+    monkeypatch.setattr(pqr, "fix", lambda *a, **k: fix_q.pop(0))
+    monkeypatch.setattr(pqr, "run_tests", lambda *a, **k: res_q.pop(0))
+    monkeypatch.setattr(pqr, "resolve_scaffold", lambda *a, **k: [])
+    monkeypatch.setattr(pqr, "read_scaffold", lambda *a, **k: "")
+    monkeypatch.setattr(pqr, "resolve_example", lambda *a, **k: None)
+    monkeypatch.setattr(pqr, "read_example", lambda *a, **k: "")
+    monkeypatch.setattr(pqr, "build_callable_api", lambda *a, **k: "")
+
+    events: list[dict] = []
+    pqr._process_finding(
+        task, args=_pf_args(proj, attempts=4), client=object(), sandbox=object(),
+        log=events.append, symbol_index=None, file_map="", protocol_mode="marker",
+        fork_rpc=None, require_pass_effective=True, poc_dir=proj / "audit" / "poc",
+        tracer=NOOP_TRACER,
+    )
+    mech_ev = [e for e in events if e["event"] == "mechanism_regression_hint"]
+    assert mech_ev, "mechanism_regression_hint must fire when a compiled attempt drops a method"
+    assert "cancel" in mech_ev[0]["hints"]
+    assert "Previously-exercised" in mech_ev[0]["hints"]

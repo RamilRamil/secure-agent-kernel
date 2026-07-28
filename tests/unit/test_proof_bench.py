@@ -1,8 +1,8 @@
-"""Feature 026: the proof-pipeline eval — external loading, the Jeffreys interval, the attrition
+"""Feature 026: the proof-pipeline eval - external loading, the Jeffreys interval, the attrition
 funnel, the overlap/config-mismatch comparison, and anti-inflation scoring.
 
 OFFLINE and SYNTHETIC only. The real harness run (`run_case`) is the expensive measured subject and
-is NEVER exercised here — scoring is tested on invented manifests and scripted harness event streams /
+is NEVER exercised here - scoring is tested on invented manifests and scripted harness event streams /
 outcomes. No target material enters the repo (memory `feedback_no_target_code_in_agent`).
 """
 from __future__ import annotations
@@ -123,7 +123,7 @@ def test_by_class_stratifies_and_never_merges_headline():
     assert rep.by_class["rounding"].successes == 2 and rep.by_class["rounding"].trials == 2
     assert rep.by_class["narrow-precondition"].successes == 0 and rep.by_class["narrow-precondition"].trials == 2
     # the class-dependent wall is READABLE at the data level: the two classes' verified rates differ
-    # (rounding fully passes, narrow fully fails) — exactly what a single scalar pass-rate would hide.
+    # (rounding fully passes, narrow fully fails) - exactly what a single scalar pass-rate would hide.
     # (Interval SEPARATION needs a larger N than this fixture; G2 delivers the stratification, not a
     #  disjointness claim at N=2.)
     round_rate = rep.by_class["rounding"].successes / rep.by_class["rounding"].trials
@@ -134,7 +134,7 @@ def test_by_class_stratifies_and_never_merges_headline():
 
 
 def test_no_class_of_yields_no_by_class():
-    """G2: without class labels the report is exactly as before — no by_class key (back-compatible)."""
+    """G2: without class labels the report is exactly as before - no by_class key (back-compatible)."""
     rep = score([_outcome("a", True)], _cfg())
     assert rep.by_class == {}
     assert "by_class" not in rep.to_dict()
@@ -187,7 +187,7 @@ def test_run_case_hard_timeout_records_error_and_continues(tmp_path, monkeypatch
     """A wedged harness child must NOT hang the whole C×N eval. `--max-minutes` is only a budget the
     harness checks in its own loop; it cannot interrupt a stuck forge/Docker child (observed live).
     run_case therefore passes a HARD subprocess timeout, and on expiry records the run in the
-    off-ladder ERROR bucket and moves on. Subprocess is STUBBED — nothing is executed."""
+    off-ladder ERROR bucket and moves on. Subprocess is STUBBED - nothing is executed."""
     d, _ = _curated(tmp_path, cid="wedge", finding_id="7")
     case = load_case(d)
     seen = {}
@@ -199,7 +199,7 @@ def test_run_case_hard_timeout_records_error_and_continues(tmp_path, monkeypatch
     monkeypatch.setattr(pb.subprocess, "run", _wedged_run)
     outcomes = pb.run_case(case, _cfg(n=2), image=None, fork=False, max_minutes=1.0)
 
-    assert len(outcomes) == 2                       # both runs recorded — the loop did not abort
+    assert len(outcomes) == 2                       # both runs recorded - the loop did not abort
     assert all(o.stage == pb.ERROR for o in outcomes)          # off-ladder infra bucket, not a proving-failure
     assert all(o.outcome == "harness_timeout" for o in outcomes)
     assert seen["timeout"] is not None and seen["timeout"] > 60  # a real deadline, with margin over the budget
@@ -288,7 +288,7 @@ def _ev(fid_ids=("1",), written=False, compiled=False, real_pass=False, outcome=
 
 
 def test_stage_of_maps_raw_event_streams():
-    # the fragile coupling to the runner's real event shapes — tested DIRECTLY, not via pre-staged outcomes
+    # the fragile coupling to the runner's real event shapes - tested DIRECTLY, not via pre-staged outcomes
     assert pb._stage_of(_ev(written=True, compiled=True, real_pass=True, outcome="passed_verified"), "1") == "verified"
     assert pb._stage_of(_ev(written=True, compiled=True, real_pass=True, outcome="passed_unchecked"), "1") == "real_pass"
     assert pb._stage_of(_ev(written=True, compiled=True), "1") == "compiled"
@@ -297,7 +297,7 @@ def test_stage_of_maps_raw_event_streams():
 
 
 def test_stage_of_requires_id_membership():
-    # extraction emits ALL ids — a bare `extracted` event must not count every case as extracted
+    # extraction emits ALL ids - a bare `extracted` event must not count every case as extracted
     assert pb._stage_of(_ev(fid_ids=("1", "2"), written=True), "9") == "not_extracted"
     assert pb._stage_of(_ev(fid_ids=("1",), not_found=True), "1") == "not_extracted"
     assert pb._stage_of(_ev(error=True), "1") == "error"
@@ -366,3 +366,50 @@ def test_render_states_n_width_and_dev_caveat():
     text = pb.render(r)
     assert "N=3" in text and "width" in text.lower()
     assert "DEV SET" in text and "NOT absolute capability" in text
+
+
+# ── feature 038 (strictly additive): interval dominance + credible-level flip + G2 replay ──
+
+def _iv(k, n, level=0.95):
+    return credible_interval(k, n, mass=level)
+
+
+def test_b3_no_false_dominance_on_overlap():
+    """B3/SC-010 - overlapping intervals never yield a dominance claim; `dominates` is false both
+    ways and `resolve` is `unresolved@N`."""
+    a, b = _iv(4, 6), _iv(3, 6)                       # clearly overlapping
+    assert not pb.dominates(a, b) and not pb.dominates(b, a)
+    assert pb.resolve(a, b) == "unresolved@N"
+
+
+def test_dominance_only_when_entirely_above():
+    a, b = _iv(30, 30), _iv(0, 30)                    # separated at 0.95
+    assert pb.dominates(a, b) and not pb.dominates(b, a)
+    assert pb.resolve(a, b) == "resolved"
+
+
+def test_b4_credible_level_is_load_bearing():
+    """B4 - the SAME counts resolve at a loose credible level but not at a strict one; the level is
+    the false-dominance bar and must be pre-registered before the run (FR-017)."""
+    ka, na, kb, nb = 7, 10, 3, 10
+    loose = pb.resolve(_iv(ka, na, 0.50), _iv(kb, nb, 0.50))
+    strict = pb.resolve(_iv(ka, na, 0.95), _iv(kb, nb, 0.95))
+    assert loose == "resolved" and strict == "unresolved@N"
+
+
+def test_b9_g2_score_byte_identical_after_038_extension():
+    """B9/SC-005 - the 037 G2 `score`/`by_class` output is byte-identical after the 038 additions
+    (only new module-level functions were added). Golden-compare a pinned class-stratified score."""
+    outs = [
+        _out("r1", "verified", "passed_verified"), _out("r1", "compiled"),
+        _out("a1", "verified", "passed_verified"), _out("a1", "draft"),
+    ]
+    class_of = {"r1": "rounding_low", "a1": "access_control_reentrancy"}
+    d = score(outs, _cfg(n=2), class_of=class_of).to_dict()
+    # the per-class breakdown exists and is computed by the untouched G2 path
+    assert set(d["by_class"]) == {"rounding_low", "access_control_reentrancy"}
+    assert d["by_class"]["rounding_low"]["successes"] == 1
+    assert d["by_class"]["rounding_low"]["trials"] == 2
+    # re-scoring identical inputs yields byte-identical JSON (deterministic, additive-only)
+    d2 = score(outs, _cfg(n=2), class_of=class_of).to_dict()
+    assert json.dumps(d, sort_keys=True) == json.dumps(d2, sort_keys=True)

@@ -706,3 +706,85 @@ def test_same_caller_helpers():
     assert sr.same_caller_conservative(None, None) is False
     assert sr.pair_confirmed_diff("a", "b") is True
     assert sr.pair_confirmed_diff(None, "b") is False
+
+
+# ── Live-miss regressions (H-01 shaped) ───────────────────────────────────────
+
+_MSG_SENDER_MOD_GATE = """\
+abstract contract AccessControlled {
+    address public twoStepConfigManager;
+
+    modifier onlyTwoStepConfigManager() {
+        require(twoStepConfigManager == _msgSender(), "ConfigManagerOnly");
+        _;
+    }
+
+    function setTwoStepConfigManager(address twoStepConfigManager_) external onlyOwner {
+        twoStepConfigManager = twoStepConfigManager_;
+    }
+}
+
+contract Foo is IFoo, AccessControlled {
+    function setVaultFooBounds(address vault, uint256 bounds) external onlyTwoStepConfigManager {
+        vault;
+        bounds;
+    }
+}
+"""
+
+_IFACE_PARENT = """\
+interface IFoo {}
+contract FooCDO {
+    function setFoo(IFoo sharesCooldown_) external onlyOwner {
+        // attach
+    }
+    function coverage() external view returns (uint256) { return 1; }
+}
+"""
+
+_IFACE_MISS = """\
+interface IFoo {}
+contract Foo is IFoo, CooldownBase {
+    function cancel() external {}
+}
+"""
+
+
+def test_detect_config_manager_msg_sender_modifier():
+    """OZ-style _msgSender() inside a named modifier must match (live Foo)."""
+    task = {
+        "location": "Foo.setVaultFooBounds",
+        "description": "config gate",
+    }
+    parent = sr.ParentResolution(status="no_candidate")
+    base = (
+        "contract Base {\n"
+        "    address internal owner;\n"
+        "    function setUp() public { vm.startPrank(owner); }\n"
+        "}\n"
+    )
+    matches = sr.detect_patterns(task, _MSG_SENDER_MOD_GATE, parent, "", base)
+    assert any(m.pattern == "config_manager_field" for m in matches)
+    cfg = next(m for m in matches if m.pattern == "config_manager_field")
+    assert cfg.evidence["field"] == "twoStepConfigManager"
+    assert cfg.evidence["setter"] == "setTwoStepConfigManager"
+    assert cfg.protected_call_site.method == "setVaultFooBounds"
+
+
+def test_detect_parent_attach_interface_param():
+    """Parent setter taking IDep must match when missing dep `is IDep`."""
+    task = {
+        "location": "FooCDO.coverage + Foo.cancel",
+        "description": "attach",
+    }
+    parent = sr.ParentResolution(
+        status="resolved",
+        contract="FooCDO",
+        source_text=_IFACE_PARENT,
+        declared_type_var="cdo",
+    )
+    matches = sr.detect_patterns(task, _IFACE_PARENT, parent, _IFACE_MISS, "contract Base {}")
+    assert any(m.pattern == "parent_attach" for m in matches)
+    pa = next(m for m in matches if m.pattern == "parent_attach")
+    assert pa.evidence["setter"] == "setFoo"
+    assert pa.evidence["dependency_type"] == "Foo"

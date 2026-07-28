@@ -59,12 +59,12 @@ def test_build_adopt_refusal_fields():
     st = cc.refresh_slots(
         cc.CheckpointState(), source=a, attempt=5, compiled=True, compiled_real=True)
     fields = cc.build_adopt_refusal_fields(
-        st, attempt=7, artifact_path="audit/poc/_runs/r/poc_attempts/H-01/a7_post_det.sol")
+        st, attempt=7, artifact_path="audit/poc/_runs/r/poc_attempts/H-01/a7_post_det.sol.txt")
     assert fields["event"] == "compile_adopt_rejected"
     assert fields["attempt"] == 7
     assert fields["restore_attempt"] == 5
     assert fields["restore_kind"] == "non_vacuous"
-    assert "a7_post_det.sol" in fields["artifact_path"]
+    assert "a7_post_det.sol.txt" in fields["artifact_path"]
 
 
 def test_no_restore_target_should_not_refuse():

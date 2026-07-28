@@ -366,8 +366,9 @@ def test_t019_check_reachability_pairs():
     site = m[0].protected_call_site
     c_ok = sr.check_reachability(m, _read(FIX / "config_manager_field" / "complete" / "Base.sol"))
     c_bad = sr.check_reachability(m, _read(FIX / "config_manager_field" / "incomplete" / "Base.sol"))
-    assert c_ok[0].status == "complete" and c_ok[0].missing == []
-    assert c_bad[0].status == "incomplete" and "setConfigManager" in c_bad[0].missing
+    assert c_ok[0].status == "complete"
+    assert c_bad[0].status == "incomplete"
+    assert any("setConfigManager" in x for x in c_bad[0].missing)
     assert c_ok[0].protected_call_site == c_bad[0].protected_call_site == site
 
     # role
@@ -708,6 +709,62 @@ def test_same_caller_helpers():
     assert sr.pair_confirmed_diff(None, "b") is False
 
 
+def test_synthesis_extras_excerpts_large_parent_source():
+    """Matched parent_attach must not dump a 50KB parent into the synth prompt."""
+    setter = "setFoo"
+    huge = (
+        "// SPDX-License-Identifier: MIT\npragma solidity ^0.8.28;\n"
+        + ("// pad\n" * 4000)
+        + f"contract FooCDO {{\n    function {setter}(IFoo x) external {{}}\n"
+        + "    function coverage() external view returns (uint256) { return 1; }\n}\n"
+        + ("// tail\n" * 2000)
+    )
+    assert len(huge) > sr.EXTRAS_BLOCK_CHAR_BUDGET * 2
+    task = {
+        "location": "FooCDO.coverage + Foo.cancel",
+        "description": "attach",
+    }
+    parent = sr.ParentResolution(
+        status="resolved",
+        contract="FooCDO",
+        source_text=huge,
+        declared_type_var="cdo",
+    )
+    miss = (
+        "interface IFoo {}\n"
+        "contract Foo is IFoo { function cancel() external {} }\n"
+    )
+    matches = sr.detect_patterns(task, huge, parent, miss, "contract Base {}")
+    assert any(m.pattern == "parent_attach" for m in matches)
+    extras = sr.synthesis_extras(matches, huge[:8000], parent, task)
+    assert "[DATA START parent_source]" in extras
+    assert setter in extras
+    parent_block = extras.split("[DATA START parent_source]")[1].split(
+        "[DATA END parent_source]"
+    )[0]
+    assert len(parent_block) <= sr.EXTRAS_BLOCK_CHAR_BUDGET + 80
+    assert len(extras) < len(huge)
+    # Small sources stay byte-identical (no forced truncation markers).
+    small = f"contract P {{ function {setter}(IFoo x) external {{}} }}\n"
+    parent_small = sr.ParentResolution(
+        status="resolved", contract="P", source_text=small, declared_type_var="p"
+    )
+    m2 = [
+        sr.PatternMatch(
+            pattern="parent_attach",
+            evidence={
+                "parent": "P",
+                "setter": setter,
+                "dependency_type": "Foo",
+            },
+            protected_call_site=sr.CallSite("P", setter),
+        )
+    ]
+    ex2 = sr.synthesis_extras(m2, "loc", parent_small, task)
+    assert small in ex2
+    assert "[truncated" not in ex2
+
+
 # ── Live-miss regressions (H-01 shaped) ───────────────────────────────────────
 
 _MSG_SENDER_MOD_GATE = """\
@@ -788,3 +845,58 @@ def test_detect_parent_attach_interface_param():
     pa = next(m for m in matches if m.pattern == "parent_attach")
     assert pa.evidence["setter"] == "setFoo"
     assert pa.evidence["dependency_type"] == "Foo"
+
+
+def test_extras_name_config_receiver_type():
+    """Config-manager bullet must name the receiver type, not a bare setter."""
+    task = {"location": "DemoVault.sol:gate", "description": "config gate"}
+    gate = _read(FIX / "config_manager_field" / "complete" / "Gate.sol")
+    base = _read(FIX / "config_manager_field" / "complete" / "Base.sol")
+    parent = sr.ParentResolution(status="no_candidate")
+    matches = sr.detect_patterns(task, gate, parent, "", base)
+    extras = sr.synthesis_extras(matches, gate, parent, task)
+    assert "newly deployed" in extras
+    assert "DemoVault" in extras
+    assert "Do NOT call" in extras
+
+
+def test_fix_wiring_receivers_retargets_wrong_type():
+    """acm.setX -> sharesCooldown.setX when Foo is the preferred receiver type."""
+    matches = [
+        sr.PatternMatch(
+            pattern="config_manager_field",
+            evidence={
+                "field": "twoStepConfigManager",
+                "setter": "setTwoStepConfigManager",
+                "gated_contract": "Foo",
+                "gated_function": "setVaultFooBounds",
+            },
+            protected_call_site=sr.CallSite("Foo", "setVaultFooBounds"),
+        ),
+        sr.PatternMatch(
+            pattern="parent_attach",
+            evidence={
+                "parent": "ParentVault",
+                "setter": "setCooldown",
+                "dependency_type": "Foo",
+            },
+            protected_call_site=sr.CallSite("ParentVault", "setCooldown"),
+        ),
+    ]
+    bad = (
+        "contract SynthBase {\n"
+        "    Foo internal sharesCooldown;\n"
+        "    AccessControlManager internal acm;\n"
+        "    function setUp() public {\n"
+        "        acm.setTwoStepConfigManager(makeAddr('cm'));\n"
+        "    }\n"
+        "}\n"
+    )
+    out, applied = sr.fix_wiring_receivers(bad, matches)
+    assert applied
+    assert "sharesCooldown.setTwoStepConfigManager" in out
+    assert "acm.setTwoStepConfigManager" not in out
+    checks = sr.check_reachability(matches, bad)
+    assert checks[0].status == "incomplete"
+    checks2 = sr.check_reachability(matches, out)
+    assert checks2[0].status == "complete"

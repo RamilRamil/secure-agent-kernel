@@ -142,6 +142,25 @@ def test_042_nonterminal_events_do_not_change_taxonomy():
     assert tax.classify(stripped) == baseline
 
 
+def test_043_compile_adopt_rejected_does_not_change_taxonomy():
+    """SC-005 / FR-010: compile_adopt_rejected is non-terminal; classify() unchanged."""
+    base = _load("mixed_terminal.jsonl")
+    baseline = tax.classify(base)
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "fixtures" / "compiled_checkpoint" / "events" / "compile_adopt_rejected.jsonl"
+    )
+    injected = list(base)
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        e = json.loads(line)
+        if e.get("event") == "compile_adopt_rejected":
+            injected.append(e)
+    assert tax.classify(injected) == baseline
+
+
 # ── T038: Constitution IV guard - no auto-promotion into steering knowledge ───
 def test_classifier_imports_are_allowlisted():
     """The taxonomy is a REPORT: it must not import the lesson store, prompt machinery,

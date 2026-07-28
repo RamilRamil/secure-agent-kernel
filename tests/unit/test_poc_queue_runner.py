@@ -2063,3 +2063,134 @@ def test_042_process_finding_mechanism_regression(tmp_path, monkeypatch):
     assert mech_ev, "mechanism_regression_hint must fire when a compiled attempt drops a method"
     assert "cancel" in mech_ev[0]["hints"]
     assert "Previously-exercised" in mech_ev[0]["hints"]
+
+
+def test_043_process_finding_refuse_restores_baseline(tmp_path, monkeypatch):
+    """Feature 043 T024: compile-fail after a compiled checkpoint refuses adopt and
+    grounds the next fix on the restore-target body (not the refused source)."""
+    from sr_agent.eval.tracer import NOOP_TRACER
+
+    proj = tmp_path
+    (proj / "contracts").mkdir()
+    (proj / "audit" / "poc").mkdir(parents=True, exist_ok=True)
+    task = {
+        "id": "H-43", "title": "checkpoint",
+        "location": "DemoVault.sol:gate",
+        "description": "gate blocked",
+    }
+    body_a = (
+        'import {DemoVault} from "../contracts/DemoVault.sol";\n'
+        "contract PoC is Base {\n"
+        "  function test_x() public {\n"
+        "    DemoVault(address(0x1)).gate();\n"
+        "    assertEq(1, 1);\n"
+        "  }\n"
+        "}\n"
+    )
+    body_c = (
+        "contract PoC is Base {\n"
+        "  function test_x() public { inventedHelperThatDoesNotExist(); }\n"
+        "}\n"
+    )
+    compiled_fail = type("R", (), {
+        "passed": False, "exit_code": 1,
+        "stdout": "Ran 1 test for audit/poc/H_43.t.sol\n[FAIL: DepositCapReached] test_x()",
+        "stderr": "",
+    })()
+    compile_error = type("R", (), {
+        "passed": False, "exit_code": 1,
+        "stdout": "Compiler run failed:\nError (7576): Undeclared identifier.",
+        "stderr": "",
+    })()
+    results = [compiled_fail, compile_error, compiled_fail]
+    fix_inputs: list[str] = []
+    draft_q = [body_a]
+    fix_q = [body_c, body_a]
+
+    def _fix(client, task, code, feedback, *a, **k):
+        fix_inputs.append(code)
+        return fix_q.pop(0)
+
+    monkeypatch.setattr(pqr, "scaffold_missing_types", lambda *a, **k: [])
+    monkeypatch.setattr(pqr, "draft", lambda *a, **k: draft_q.pop(0))
+    monkeypatch.setattr(pqr, "fix", _fix)
+    monkeypatch.setattr(pqr, "run_tests", lambda *a, **k: results.pop(0))
+    monkeypatch.setattr(pqr, "_seq_draft_inplace", lambda code, blob, file_map: (code, []))
+    monkeypatch.setattr(pqr, "resolve_scaffold", lambda *a, **k: [])
+    monkeypatch.setattr(pqr, "read_scaffold", lambda *a, **k: "")
+    monkeypatch.setattr(pqr, "resolve_example", lambda *a, **k: None)
+    monkeypatch.setattr(pqr, "read_example", lambda *a, **k: "")
+    monkeypatch.setattr(pqr, "build_callable_api", lambda *a, **k: "")
+
+    events: list[dict] = []
+    pqr._process_finding(
+        task, args=_pf_args(proj, attempts=3), client=object(), sandbox=object(),
+        log=events.append, symbol_index=None, file_map="", protocol_mode="marker",
+        fork_rpc=None, require_pass_effective=True, poc_dir=proj / "audit" / "poc",
+        tracer=NOOP_TRACER, run_id="run043",
+    )
+    refused = [e for e in events if e.get("event") == "compile_adopt_rejected"]
+    assert refused, "compile_adopt_rejected must fire on post-DET non-compile with checkpoint"
+    assert refused[0]["restore_kind"] == "non_vacuous"
+    art = proj / refused[0]["artifact_path"]
+    assert art.is_file()
+    assert "inventedHelperThatDoesNotExist" in art.read_text(encoding="utf-8")
+    assert len(fix_inputs) >= 2
+    # Checkpoint may differ from raw draft after _seq_postmodel; next fix must match
+    # the compiled working body from attempt 1, not the refused body_c.
+    assert fix_inputs[1] == fix_inputs[0]
+    assert "inventedHelperThatDoesNotExist" not in fix_inputs[1]
+    assert "DemoVault" in fix_inputs[1]
+
+
+def test_015_empty_fix_keep_still_first(tmp_path, monkeypatch):
+    """FR-010 / T028: empty fix payload keeps prior code (feature 015), unchanged by 043."""
+    from sr_agent.eval.tracer import NOOP_TRACER
+
+    proj = tmp_path
+    (proj / "contracts").mkdir()
+    (proj / "audit" / "poc").mkdir(parents=True, exist_ok=True)
+    task = {
+        "id": "H-15", "title": "emptyfix",
+        "location": "DemoVault.sol:gate",
+        "description": "gate",
+    }
+    body = (
+        'import {DemoVault} from "../contracts/DemoVault.sol";\n'
+        "contract PoC is Base {\n"
+        "  function test_x() public { assertEq(1, 1); }\n"
+        "}\n"
+    )
+    fail = type("R", (), {
+        "passed": False, "exit_code": 1,
+        "stdout": "Ran 1 test for audit/poc/H_15.t.sol\n[FAIL: x] test_x()",
+        "stderr": "",
+    })()
+    fix_seen: list[str] = []
+
+    def _fix(client, task, code, feedback, *a, **k):
+        fix_seen.append(code)
+        return ""  # empty payload -> keep
+
+    monkeypatch.setattr(pqr, "scaffold_missing_types", lambda *a, **k: [])
+    monkeypatch.setattr(pqr, "draft", lambda *a, **k: body)
+    monkeypatch.setattr(pqr, "fix", _fix)
+    monkeypatch.setattr(pqr, "run_tests", lambda *a, **k: fail)
+    monkeypatch.setattr(pqr, "resolve_scaffold", lambda *a, **k: [])
+    monkeypatch.setattr(pqr, "read_scaffold", lambda *a, **k: "")
+    monkeypatch.setattr(pqr, "resolve_example", lambda *a, **k: None)
+    monkeypatch.setattr(pqr, "read_example", lambda *a, **k: "")
+    monkeypatch.setattr(pqr, "build_callable_api", lambda *a, **k: "")
+
+    events: list[dict] = []
+    pqr._process_finding(
+        task, args=_pf_args(proj, attempts=2), client=object(), sandbox=object(),
+        log=events.append, symbol_index=None, file_map="", protocol_mode="marker",
+        fork_rpc=None, require_pass_effective=True, poc_dir=proj / "audit" / "poc",
+        tracer=NOOP_TRACER, run_id="run015",
+    )
+    assert any(e.get("event") == "fix_no_code" for e in events)
+    assert not any(e.get("event") == "compile_adopt_rejected" for e in events)
+    # Second attempt still runs with kept body (empty fix did not wipe).
+    tested = [e for e in events if e.get("event") == "tested"]
+    assert len(tested) == 2

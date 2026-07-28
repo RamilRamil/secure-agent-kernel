@@ -120,6 +120,39 @@ def test_seq_synth_repair_undeclared_from_scaffold(tmp_path):
     assert "undeclared_import" in sf._applied_names(results)
 
 
+def test_seq_synth_repair_undeclared_from_symbol_index(tmp_path):
+    """Inherited deploy-base missing its own import resolves via unique symbol_index hit.
+
+    Live H-01 shape: existing scaffold IS FooProtocolDeploymentBase (no self-import),
+    so file_map/scaffold authorities miss; index+base_dir must supply the path.
+    """
+    base = tmp_path / "test" / "PoC" / "DeployBase.sol"
+    base.parent.mkdir(parents=True)
+    base.write_text(
+        "// SPDX-License-Identifier: MIT\npragma solidity ^0.8.28;\n"
+        "abstract contract DeployBase { function setUp() public virtual {} }\n",
+        encoding="utf-8",
+    )
+    idx = SymbolIndex.build(tmp_path)
+    synth_dir = tmp_path / "audit" / "poc" / "_runs" / "rid"
+    synth_dir.mkdir(parents=True)
+    code = (
+        "// SPDX-License-Identifier: MIT\npragma solidity ^0.8.28;\n"
+        "abstract contract SynthBase is DeployBase {}\n"
+    )
+    forge = _undeclared_block("DeployBase", "7920")
+    out, results = pqr._seq_synth_repair(
+        code, forge, tmp_path, synth_dir, idx, file_map="", existing=base.read_text()
+    )
+    by_name = {r["name"]: r for r in results}
+    assert by_name["undeclared_import"]["matched"] and by_name["undeclared_import"]["applied"]
+    assert "import { DeployBase } from" in out
+    assert "DeployBase.sol" in out
+    # Relative to the deep _runs candidate dir.
+    assert out.count("DeployBase.sol") >= 1
+    assert "../../../../test/PoC/DeployBase.sol" in out or "test/PoC/DeployBase.sol" in out
+
+
 def test_seq_synth_repair_matched_not_applied_is_distinct(tmp_path):
     """T030/FR-001c: `matched && !applied` is representable and distinct from `!matched`
     (9553 present but flagged line out of range → address_interface matched, nothing applied)."""

@@ -909,6 +909,34 @@ def test_mutation_verify_verdicts(tmp_path, monkeypatch):
     assert (proj / "src" / "A.sol").read_text() == before
 
 
+def test_mutation_verify_isolates_compile_scope(tmp_path, monkeypatch):
+    """A sibling PoC in POC_SUBDIR that breaks against the fix's changed ABI must NOT fail the
+    finding under test: mutation_verify prunes the throwaway copy's POC_SUBDIR to the target PoC
+    before compiling, so `forge test`'s dir-wide COMPILE never drags in unrelated siblings (the
+    `patched_no_build` isolation bug). `_synth/` bases stay; the real tree is untouched."""
+    proj = _mut_project(tmp_path)
+    poc_dir = proj / pqr.POC_SUBDIR
+    (poc_dir / "_synth").mkdir(parents=True)
+    (poc_dir / "H_01.t.sol").write_text("// target under test\n", encoding="utf-8")
+    (poc_dir / "H_03.t.sol").write_text("// sibling that breaks vs the patched ABI\n", encoding="utf-8")
+    (poc_dir / "_synth" / "Base.sol").write_text("// a base the PoC imports\n", encoding="utf-8")
+
+    seen = {}
+    def _capture(copy, *a, **k):
+        cp = copy / pqr.POC_SUBDIR
+        seen["tsol"] = sorted(p.name for p in cp.rglob("*.t.sol"))
+        seen["synth_kept"] = (cp / "_synth" / "Base.sol").is_file()
+        return _MutResult(passed=False)
+    monkeypatch.setattr(pqr, "run_tests", _capture)
+
+    task = {"id": "H-01", "title": "t", "fix": _FIX_DIFF}
+    status, _ = pqr.mutation_verify(proj, task, "audit/poc/H_01.t.sol", object(), [].append)
+    assert status == "verified"
+    assert seen["tsol"] == ["H_01.t.sol"]        # sibling H_03.t.sol pruned from the compile scope
+    assert seen["synth_kept"] is True            # _synth bases kept (the PoC imports them)
+    assert (poc_dir / "H_03.t.sol").is_file()    # only the COPY was pruned; real tree intact
+
+
 def test_mutation_verify_unavailable(tmp_path, monkeypatch):
     """FR-005/FR-006: no fix / diff won't apply / patched won't build / infra error
     all return 'unavailable' - never a downgrade."""

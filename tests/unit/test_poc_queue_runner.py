@@ -684,6 +684,47 @@ def test_scaffold_missing_types_direct_declaration_via_ast(tmp_path):
     assert pqr.scaffold_missing_types(mention_only, ["Foo"], idx) == ["Foo"]
 
 
+def test_scaffold_missing_types_subtype_var_satisfies_base_need(tmp_path):
+    """Subtype-aware: a base that declares a var of a SUBTYPE of the needed type
+    is NOT missing it (Liskov). Live strata L-07: FooProtocolDeploymentBase
+    declares `ERC20Foo erc20Cooldown` / `FooCooldown unstakeCooldown`,
+    both `is CooldownBase`; a finding needing `CooldownBase` was falsely flagged
+    missing → sent to synth → synth-compile-failed. The instances already exist."""
+    (tmp_path / "Cooldown.sol").write_text(
+        "pragma solidity ^0.8.28;\n"
+        "contract CooldownBase {}\n"
+        "contract ERC20Foo is CooldownBase {}\n",
+        encoding="utf-8")
+    (tmp_path / "Deploy.sol").write_text(
+        "pragma solidity ^0.8.28;\n"
+        "contract Deploy { ERC20Foo internal erc20Cooldown; }",
+        encoding="utf-8")
+    idx = SymbolIndex.build(tmp_path)
+    scaffold = "pragma solidity ^0.8.28;\ncontract Base is Deploy { address alice; }"
+    # ERC20Foo is-a CooldownBase → the need is provided → NOT missing
+    assert pqr.scaffold_missing_types(scaffold, ["CooldownBase"], idx) == []
+    # a SIBLING type (Foo) is NOT provided by an ERC20Foo var
+    assert pqr.scaffold_missing_types(scaffold, ["Foo"], idx) == ["Foo"]
+    # a LEAF need is not satisfied by a PARENT var (direction matters): a
+    # CooldownBase var would not provide ERC20Foo-specific behavior
+    scaffold_parent = "pragma solidity ^0.8.28;\ncontract Base2 { CooldownBase internal cb; }"
+    assert pqr.scaffold_missing_types(scaffold_parent, ["ERC20Foo"], idx) == ["ERC20Foo"]
+
+
+def test_scaffold_missing_types_subtype_declared_directly_in_scaffold(tmp_path):
+    """The subtype match also fires when the satisfying var is declared in the
+    scaffold's OWN contract (not only an inherited parent)."""
+    (tmp_path / "Cooldown.sol").write_text(
+        "pragma solidity ^0.8.28;\n"
+        "contract CooldownBase {}\n"
+        "contract FooCooldown is CooldownBase {}\n",
+        encoding="utf-8")
+    idx = SymbolIndex.build(tmp_path)
+    scaffold = ("pragma solidity ^0.8.28;\n"
+                "contract Base { FooCooldown internal unstakeCooldown; }")
+    assert pqr.scaffold_missing_types(scaffold, ["CooldownBase"], idx) == []
+
+
 # ── Feature 010: mutation-based PASS verification ──────────────────────────
 
 import subprocess as _subprocess

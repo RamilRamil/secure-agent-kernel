@@ -2263,3 +2263,21 @@ def test_015_empty_fix_keep_still_first(tmp_path, monkeypatch):
     # Second attempt still runs with kept body (empty fix did not wipe).
     tested = [e for e in events if e.get("event") == "tested"]
     assert len(tested) == 2
+
+
+# ── Feature 047 US1: synth call sites must thread the missing-type signal ──────
+def test_synth_calls_fix_wiring_receivers_with_missing_type_signal():
+    """FR-004 plumbing: `synthesize_scaffold` must pass `missing_types` + `symbol_index`
+    to `fix_wiring_receivers` at BOTH synth sites (prewrite + repair round). Source-level
+    guard so the subtype-aware branch is actually reachable in the synth path."""
+    import inspect
+    src = inspect.getsource(pqr.synthesize_scaffold)
+    calls = [ln for ln in src.splitlines() if "fix_wiring_receivers(" in ln]
+    # gather the small window after each call (kwargs may wrap to the next line)
+    joined = src
+    n_sites = joined.count("fix_wiring_receivers(")
+    assert n_sites >= 2, f"expected >=2 synth call sites, found {n_sites}"
+    assert joined.count("missing_types=missing_types") >= 2, (
+        "both synth call sites must pass missing_types=missing_types")
+    assert joined.count("symbol_index=symbol_index") >= 2, (
+        "both synth call sites must pass symbol_index=symbol_index")

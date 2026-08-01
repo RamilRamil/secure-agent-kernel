@@ -900,3 +900,153 @@ def test_fix_wiring_receivers_retargets_wrong_type():
     assert checks[0].status == "incomplete"
     checks2 = sr.check_reachability(matches, out)
     assert checks2[0].status == "complete"
+
+
+# ── Feature 047 US1: synth-scoped, subtype-aware, masking-safe receiver fix ────
+# All names invented/synthetic (FR-010). Index built offline via build_from_source.
+
+from scripts.solidity_index import SymbolIndex  # noqa: E402
+
+
+def _synth_index(extra: str = "") -> SymbolIndex:
+    """Owner `Guardian` declares the setter; Widget/Gadget inherit it; Unrelated does not."""
+    return SymbolIndex.build_from_source(
+        "// SPDX-License-Identifier: MIT\npragma solidity ^0.8.28;\n"
+        "contract Guardian { function configure(address a) external {} }\n"
+        "contract Widget is Guardian {}\n"
+        "contract Gadget is Guardian {}\n"
+        "contract Unrelated {}\n" + extra
+    )
+
+
+def _cfg(setter: str, *, gated: str = "", dep: str = "") -> list[sr.PatternMatch]:
+    ms = [sr.PatternMatch(pattern="config_manager_field",
+                          evidence={"setter": setter, "gated_contract": gated})]
+    if dep:
+        ms.append(sr.PatternMatch(pattern="parent_attach",
+                                  evidence={"setter": setter, "dependency_type": dep}))
+    return ms
+
+
+def test_fix_wiring_synth_rewrites_to_missing_type_var():
+    """SC-001: phantom rewritten to the declared missing-type var that is-a the owner."""
+    idx = _synth_index()
+    matches = _cfg("configure", gated="Guardian")
+    code = (
+        "contract SynthBase {\n"
+        "    Widget widget;\n"
+        "    function setUp() public { foo.configure(admin); }\n"  # foo undeclared
+        "}\n"
+    )
+    out, applied = sr.fix_wiring_receivers(
+        code, matches, missing_types=["Widget"], symbol_index=idx)
+    assert applied
+    assert "widget.configure(admin)" in out
+    assert "foo.configure" not in out
+
+
+def test_fix_wiring_synth_masking_default_not_satisfied():
+    """SC-002: phantom == _default_var_name(rtype), undeclared, must NOT be left masked."""
+    idx = _synth_index()
+    matches = _cfg("configure", gated="Guardian")
+    default_recv = sr._default_var_name("Guardian")  # "guardian"
+    code = (
+        "contract SynthBase {\n"
+        "    Widget widget;\n"
+        f"    function setUp() public {{ {default_recv}.configure(admin); }}\n"
+        "}\n"
+    )
+    out, applied = sr.fix_wiring_receivers(
+        code, matches, missing_types=["Widget"], symbol_index=idx)
+    # never silently satisfied: either rewritten to the real declared var, or byte-identical
+    assert applied and "widget.configure(admin)" in out
+    assert f"{default_recv}.configure" not in out
+
+
+def test_fix_wiring_synth_ambiguous_missing_type_vars_noop():
+    """SC-003a: two distinct subtype-valid missing-type vars, no rtype var -> byte no-op."""
+    idx = _synth_index()
+    matches = _cfg("configure", gated="Guardian")  # rtype=Guardian, no guardian var declared
+    code = (
+        "contract SynthBase {\n"
+        "    Widget widget;\n"
+        "    Gadget gadget;\n"
+        "    function setUp() public { foo.configure(admin); }\n"
+        "}\n"
+    )
+    out, applied = sr.fix_wiring_receivers(
+        code, matches, missing_types=["Widget", "Gadget"], symbol_index=idx)
+    assert not applied
+    assert out == code  # byte-identical
+
+
+def test_fix_wiring_synth_rtype_gate_non_owner_not_chosen():
+    """rtype-gate regression: a declared non-owner rtype var must never be the target."""
+    idx = _synth_index()
+    # rtype = Unrelated (declared, but NOT is_subtype Guardian) via parent_attach dep
+    matches = _cfg("configure", gated="Guardian", dep="Unrelated")
+    code = (
+        "contract SynthBase {\n"
+        "    Unrelated unrelated;\n"
+        "    Widget widget;\n"
+        "    function setUp() public { foo.configure(admin); }\n"
+        "}\n"
+    )
+    out, applied = sr.fix_wiring_receivers(
+        code, matches, missing_types=["Widget"], symbol_index=idx)
+    assert applied
+    assert "widget.configure(admin)" in out
+    assert "unrelated.configure" not in out  # non-owner rtype var rejected
+
+
+def test_fix_wiring_synth_rtype_owner_may_be_chosen():
+    """Inherited-base case: a declared rtype var that DOES own the setter may be chosen."""
+    idx = _synth_index()
+    matches = _cfg("configure", gated="Guardian")  # rtype=Guardian (reflexive owner)
+    code = (
+        "contract SynthBase {\n"
+        "    Guardian guardian;\n"
+        "    Widget widget;\n"
+        "    function setUp() public { foo.configure(admin); }\n"
+        "}\n"
+    )
+    out, applied = sr.fix_wiring_receivers(
+        code, matches, missing_types=["Widget"], symbol_index=idx)
+    assert applied
+    assert "guardian.configure(admin)" in out  # rtype var wins (precedence)
+
+
+def test_fix_wiring_synth_idempotent():
+    """FR-007: a second pass makes no further change."""
+    idx = _synth_index()
+    matches = _cfg("configure", gated="Guardian")
+    code = (
+        "contract SynthBase {\n"
+        "    Widget widget;\n"
+        "    function setUp() public { foo.configure(admin); }\n"
+        "}\n"
+    )
+    out1, applied1 = sr.fix_wiring_receivers(
+        code, matches, missing_types=["Widget"], symbol_index=idx)
+    out2, applied2 = sr.fix_wiring_receivers(
+        out1, matches, missing_types=["Widget"], symbol_index=idx)
+    assert applied1 and not applied2
+    assert out2 == out1
+
+
+def test_fix_wiring_legacy_unchanged_no_index():
+    """SC-003b: the two-positional (no-index) legacy path is byte-identical to pre-feature.
+
+    With no symbol_index, a phantom equal to the synthetic default is still treated as
+    allowed (the documented legacy behaviour) -> byte-stable no-op. This guards that the
+    legacy branch was not perturbed by the synth branch."""
+    matches = _cfg("configure", gated="Guardian")
+    default_recv = sr._default_var_name("Guardian")
+    code = (
+        "contract SynthBase {\n"
+        f"    function setUp() public {{ {default_recv}.configure(admin); }}\n"
+        "}\n"
+    )
+    out, applied = sr.fix_wiring_receivers(code, matches)  # no kwargs -> legacy
+    assert not applied
+    assert out == code

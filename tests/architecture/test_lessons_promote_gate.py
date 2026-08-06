@@ -11,10 +11,15 @@ from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[2]
 
-# The agent/harness surface — none of these may promote a lesson.
+# The KERNEL agent surface — none of these may promote a lesson. The audit harness
+# (scripts/poc_queue_runner.py) is guarded separately in Repo B by
+# tests/audit/architecture/test_lessons_promote_gate_audit.py; it is not in the kernel
+# carve, so it is filtered out here when absent (feature 048).
 _GUARDED = [
-    _ROOT / "scripts" / "poc_queue_runner.py",
-    *sorted((_ROOT / "sr_agent" / "orchestrator").glob("*.py")),
+    p for p in (
+        _ROOT / "scripts" / "poc_queue_runner.py",
+        *sorted((_ROOT / "sr_agent" / "orchestrator").glob("*.py")),
+    ) if p.exists()
 ]
 
 

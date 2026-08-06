@@ -77,9 +77,7 @@ def test_search_missing_root_raises(tmp_path):
         search_code("x", tmp_path / "nope")
 
 
-# ── example contract is searchable ───────────────────────────────────────────
-
-def test_example_vault_has_reentrancy_shape():
-    example = Path(__file__).resolve().parents[2] / "examples" / "vulnerable-vault"
-    hits = search_code("call{value:", example)
-    assert any(h.file == "Vault.sol" for h in hits)
+# NOTE (feature 048): the real example-contract search test moved to
+# tests/audit/unit/test_readonly_example.py — examples/vulnerable-vault is audit content
+# (Repo B), not in the kernel carve. Kernel search_code coverage above uses synthetic
+# fixtures only.

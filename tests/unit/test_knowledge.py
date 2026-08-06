@@ -60,8 +60,7 @@ def test_injected_embedder_used(kb_root):
     assert "Oracle" in results[0].heading
 
 
-def test_seeded_pattern_doc_is_searchable():
-    root = Path(__file__).resolve().parents[2] / "knowledge"
-    kb = KnowledgeBase(root=root)
-    results = kb.search("checks effects interactions reentrancy", category="vulnerability-patterns")
-    assert results and any("reentrancy" in c.source.lower() for c in results)
+# NOTE (feature 048): the real-corpus search test moved to
+# tests/audit/unit/test_knowledge_corpus.py — the knowledge/ corpus is audit content
+# (Repo B), not in the kernel carve. Kernel KnowledgeBase coverage above uses synthetic
+# fixtures only.

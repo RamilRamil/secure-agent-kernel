@@ -41,10 +41,12 @@ def test_no_top_level_google_import() -> None:
 
 
 def test_core_modules_import_without_sdk() -> None:
-    # These import fine even though google-genai is not installed in this env.
+    # These KERNEL modules import fine even though google-genai is not installed.
+    # (The audit composition layer `frontend.backend.model_config` is covered by the
+    #  audit-side test tests/audit/unit/test_model_config_gemini.py — importing it here
+    #  would break this kernel test in Repo A, where frontend/ does not exist.)
     for mod in ("sr_agent.llm_core.gemini_client",
-                "sr_agent.llm_core.chat_reasoning",
-                "frontend.backend.model_config"):
+                "sr_agent.llm_core.chat_reasoning"):
         assert importlib.import_module(mod) is not None
 
 

@@ -1,0 +1,56 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "secure-agent-kernel"
+version = "0.1.0"
+description = "Task-agnostic, memory-injection-resistant agent kernel (importable as sr_agent)"
+license = "MIT"
+requires-python = ">=3.11"
+dependencies = [
+    # LLM APIs
+    "anthropic>=0.40.0",
+    # Data validation — Pydantic v2 required (v1 has no model_rebuild)
+    "pydantic>=2.7.0",
+    # HMAC + key material (SourceType tier, memory record signing)
+    "cryptography>=42.0.0",
+    # Observability
+    "langfuse>=2.0.0",
+    # HTTP (LLM providers / relay)
+    "requests>=2.31.0",
+    # CLI primitives (kernel-level command surface)
+    "click>=8.1.0",
+    "rich>=13.7.0",
+]
+
+# NOTE (feature 048, FR-011): NO web3 / docker here. Those are audit-capability
+# dependencies (on-chain reads, sandbox containers) and live in Repo B's manifest.
+# The kernel neither imports nor requires them.
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "ruff>=0.4.0",
+]
+# Optional paid provider (spec 018). NOT a runtime dependency — the core loop
+# runs on the local model / relay without it (Constitution V). GeminiClient
+# imports it lazily and errors clearly if it's absent.
+gemini = [
+    "google-genai>=1.0.0",
+]
+
+[tool.setuptools.packages.find]
+include = ["sr_agent*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

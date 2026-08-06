@@ -1,11 +1,20 @@
 import os
-import tempfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 
 @dataclass(frozen=True)
-class Config:
+class KernelConfig:
+    """Task-agnostic configuration owned by the secure-agent kernel (feature 048).
+
+    Exactly the 13 kernel fields (data-model.md ownership table rows 1–13). Audit
+    material — chain keys, cloned-target workspaces, the SmartGraphical engine — and
+    model-routing slot selection are NOT here: they live in the audit pack's
+    AuditConfig, which composes this. The kernel never reads an audit field and never
+    hard-codes a model slot; routing model ids arrive by injection (a Mapping[str,str]),
+    so the kernel stays shape-agnostic. See specs/048-repo-split/ (Configuration ownership).
+    """
+
     # LLM APIs
     anthropic_api_key: str
     # Optional Gemini key (spec 018) — the operator frontend can also supply one
@@ -14,8 +23,6 @@ class Config:
     gemini_api_key: str
     # Optional OpenRouter key (spec 020) — same posture as gemini_api_key.
     openrouter_api_key: str
-    alchemy_api_key: str
-    tenderly_api_key: str
 
     # Memory integrity — HMAC key as raw bytes
     secret_key: bytes
@@ -28,23 +35,6 @@ class Config:
     # Experiential knowledge loop (feature 014) — candidate queue for pending lessons.
     # Promoted lessons live under knowledge_root/lessons/; this is the pending side.
     lessons_root: Path
-    # Cloned audit targets (feature 021) — a git-URL target is fetched here. MUST be
-    # EXTERNAL to the agent repo (the session guard rejects paths under it), so the
-    # default is the system temp dir. Gitignored; target code never enters the repo.
-    workspaces_root: Path
-    # Optional git token (feature 021) for cloning PRIVATE target repos. Write-only:
-    # never returned/persisted/logged/argv. Empty by default (public repos need none).
-    git_token: str
-
-    # SmartGraphical engine (feature 002) — external structural+logic analyzer.
-    # Empty string disables the engine; pipeline auto-skips if unset/unavailable.
-    smartgraphical_root: str
-
-    # Model routing
-    stage1_model: str
-    stage2_model: str
-    stage3_model: str
-    poc_model: str
 
     # Observability — optional
     langfuse_secret_key: str
@@ -60,33 +50,23 @@ def _require(name: str) -> str:
     return value
 
 
-def load_config() -> Config:
+def load_kernel_config() -> KernelConfig:
     langfuse_secret = os.environ.get("LANGFUSE_SECRET_KEY", "")
     langfuse_public = os.environ.get("LANGFUSE_PUBLIC_KEY", "")
 
-    return Config(
+    return KernelConfig(
         # Optional: the core loop runs on local model / relay (Constitution V).
         # Only the ClaudeClient path (non-chat audit stages) needs this, and it
         # errors clearly at construction if it's missing.
         anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY", ""),
         gemini_api_key=os.environ.get("GEMINI_API_KEY", ""),
         openrouter_api_key=os.environ.get("OPENROUTER_API_KEY", ""),
-        alchemy_api_key=os.environ.get("ALCHEMY_API_KEY", ""),
-        tenderly_api_key=os.environ.get("TENDERLY_API_KEY", ""),
         secret_key=bytes.fromhex(_require("SR_SECRET_KEY")),
         memory_root=Path(os.environ.get("SR_MEMORY_ROOT", "./memory")),
         knowledge_root=Path(os.environ.get("SR_KNOWLEDGE_ROOT", "./knowledge")),
         confirmations_root=Path(os.environ.get("SR_CONFIRMATIONS_ROOT", "./confirmations")),
         relay_root=Path(os.environ.get("SR_RELAY_ROOT", "./relay")),
         lessons_root=Path(os.environ.get("SR_LESSONS_ROOT", "./lessons")),
-        workspaces_root=Path(os.environ.get(
-            "SR_WORKSPACES_ROOT", str(Path(tempfile.gettempdir()) / "sr-agent-workspaces"))),
-        git_token=os.environ.get("GITHUB_TOKEN", ""),
-        smartgraphical_root=os.environ.get("SR_SMARTGRAPHICAL_ROOT", ""),
-        stage1_model=os.environ.get("SR_STAGE1_MODEL", "claude-opus-4-8"),
-        stage2_model=os.environ.get("SR_STAGE2_MODEL", "sr-stage2"),
-        stage3_model=os.environ.get("SR_STAGE3_MODEL", "claude-opus-4-8"),
-        poc_model=os.environ.get("SR_POC_MODEL", "qwen3-coder"),
         langfuse_secret_key=langfuse_secret,
         langfuse_public_key=langfuse_public,
         langfuse_host=os.environ.get("LANGFUSE_HOST", "http://localhost:3000"),
@@ -95,5 +75,5 @@ def load_config() -> Config:
 
 
 # Module-level singleton — loaded once at import time.
-# In tests, patch os.environ before importing or use load_config() directly.
-config: Config = load_config()
+# In tests, patch os.environ before importing or use load_kernel_config() directly.
+config: KernelConfig = load_kernel_config()

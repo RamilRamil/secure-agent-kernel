@@ -83,6 +83,8 @@ class OrchestratorLoop:
         poc_generator: Callable[[str], str] | None = None,
         checkpoint_fn: Callable | None = None,
         event_sink: Callable[[dict], None] | None = None,
+        discovery_model: str | None = None,
+        chat_model: str | None = None,
     ) -> None:
         self._session = session
         self._memory = memory
@@ -99,6 +101,13 @@ class OrchestratorLoop:
         # never touches the paid API (Constitution V).
         self._reasoning = reasoning_provider
         self._session_facts_provider = session_facts_provider
+        # Model ids arrive by injection (feature 048) — the kernel loop owns no
+        # routing vocabulary. The composition root resolves them from the audit
+        # model-roles map and passes opaque strings; these two just size context
+        # windows here (and seed the paid ClaudeClient in run()). None keeps the
+        # pre-split default sizing behaviour for callers that don't inject.
+        self._discovery_model = discovery_model
+        self._chat_model = chat_model
         self._audit_client: ClaudeClient | None = None
         self._findings: list = []
 
@@ -142,12 +151,12 @@ class OrchestratorLoop:
                 session=self._session,
                 system_prompt=system_prompt,
                 tool_output=last_tool_output,
-                model=config.stage1_model,
+                model=self._discovery_model or "claude-opus-4-8",
             )
 
             # ── LLM call ─────────────────────────────────────────────────
             if self._audit_client is None:
-                self._audit_client = ClaudeClient()
+                self._audit_client = ClaudeClient(self._discovery_model)
             try:
                 agent_action = self._audit_client.complete(messages)
             except ValueError as e:
@@ -278,7 +287,7 @@ class OrchestratorLoop:
             messages = build_messages(
                 session=self._session, system_prompt=system_prompt,
                 tool_output=last_tool_output, session_facts=facts,
-                model=config.stage2_model,
+                model=self._chat_model,
             )
             try:
                 outcome = self._reasoning.complete(messages)

@@ -1,44 +1,20 @@
 from __future__ import annotations
 
-from enum import Enum
-
-from sr_agent.config import config
-
-
-class TaskType(str, Enum):
-    stage1_discovery = "stage1_discovery"
-    stage2_check = "stage2_check"
-    stage3_synthesis = "stage3_synthesis"
-    poc_writing = "poc_writing"
-
-
-# Maps task type to the model name from config
-MODEL_CONFIG: dict[TaskType, str] = {
-    TaskType.stage1_discovery: config.stage1_model,
-    TaskType.stage2_check: config.stage2_model,
-    TaskType.stage3_synthesis: config.stage3_model,
-    TaskType.poc_writing: config.poc_model,
-}
-
-# Tasks that MUST use extended thinking — security requirement, not preference
-REQUIRES_EXTENDED_THINKING: frozenset[TaskType] = frozenset({
-    TaskType.stage1_discovery,
-    TaskType.stage3_synthesis,
-})
+from typing import Mapping
 
 
 class ModelRouter:
-    """Route a task type to the correct LLM client.
+    """Resolve a caller-defined role to a model id (feature 048).
 
-    Claude Opus → Stage 1/3 (extended thinking mandatory)
-    Qwen3-4B local → Stage 2 (fine-tuned, $0/call, code stays local)
+    Shape-agnostic: the kernel router owns NO role vocabulary and NO fixed number
+    of slots. It holds whatever ``Mapping[str, str]`` the composing application
+    injects and returns ``routing[role]``. A missing role surfaces as ``KeyError``
+    — never masked by a default — so a routing gap fails loudly at the call site
+    instead of silently selecting the wrong model.
     """
 
-    def route(self, task_type: TaskType) -> str:
-        return MODEL_CONFIG[task_type]
+    def __init__(self, routing: Mapping[str, str]) -> None:
+        self._routing = routing
 
-    def requires_thinking(self, task_type: TaskType) -> bool:
-        return task_type in REQUIRES_EXTENDED_THINKING
-
-
-router = ModelRouter()
+    def route(self, role: str) -> str:
+        return self._routing[role]

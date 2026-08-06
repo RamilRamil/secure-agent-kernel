@@ -43,7 +43,10 @@ class ClaudeClient:
                 "relay) does not need it — only this paid ClaudeClient path does."
             )
         self._client = anthropic.Anthropic(api_key=config.anthropic_api_key)
-        self._model = model or config.stage1_model
+        # The kernel's paid client defaults to a capable frontier model; the
+        # composition root overrides it by injection. No routing-config read here
+        # (feature 048) — model selection is never owned by the kernel.
+        self._model = model or "claude-opus-4-8"
 
     def complete(
         self,

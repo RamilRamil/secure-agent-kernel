@@ -9,8 +9,8 @@ to a silent no-op.
 Deliberately does NOT import `sr_agent.config` — leaf modules (llm_core,
 tools) stay importable in unit tests without ANTHROPIC_API_KEY/SR_SECRET_KEY
 set. The orchestrator/CLI layer builds a `Tracer` from config and threads it
-down as a parameter, the same way `smartgraphical_root` is threaded through
-`pipeline.start_audit`.
+down as a parameter, the same way other optional engine settings are
+threaded through the pipeline entry point.
 """
 from __future__ import annotations
 

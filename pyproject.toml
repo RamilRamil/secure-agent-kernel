@@ -32,6 +32,7 @@ dependencies = [
 dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
+    "pytest-timeout>=2.3.0",
     "ruff>=0.4.0",
 ]
 # Optional paid provider (spec 018). NOT a runtime dependency — the core loop
@@ -54,3 +55,8 @@ select = ["E", "F", "I"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+# Any test that runs longer than this is a hang, not a slow test — the whole
+# kernel suite finishes in ~2s. Fail fast with a stack dump (thread method) so a
+# hang names its culprit instead of stalling CI for the job timeout.
+timeout = 60
+timeout_method = "thread"

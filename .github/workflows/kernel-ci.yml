@@ -15,6 +15,16 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # The suite runs in ~2s; anything approaching this bound is a hang, not work.
+    # Bounds cost and gives a clear "which step stalled" signal (pytest-timeout
+    # fails an individual hanging test far sooner, at 60s, with a stack dump).
+    timeout-minutes: 10
+    env:
+      # Langfuse stays disabled without keys (config derives enabled from key
+      # presence); set explicitly so no telemetry/OTel exporter thread can spin.
+      LANGFUSE_ENABLED: "false"
+      SR_SECRET_KEY: ${{ secrets.SR_SECRET_KEY || '00000000000000000000000000000000000000000000000000000000000000ff' }}
+      ANTHROPIC_API_KEY: dummy
     steps:
       - uses: actions/checkout@v4
 
@@ -27,12 +37,8 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
 
-      - name: Full kernel suite + boundary guard
-        env:
-          SR_SECRET_KEY: ${{ secrets.SR_SECRET_KEY || '00000000000000000000000000000000000000000000000000000000000000ff' }}
-          ANTHROPIC_API_KEY: dummy
-        run: |
-          # boundary guard first — the enforced kernel↔pack seam (B1–B5)
-          pytest tests/architecture/test_kernel_pack_boundary.py -v
-          # then the whole suite
-          pytest -q
+      - name: Boundary guard (kernel↔pack seam B1–B5)
+        run: pytest tests/architecture/test_kernel_pack_boundary.py -v
+
+      - name: Full kernel suite
+        run: pytest -q -p no:cacheprovider

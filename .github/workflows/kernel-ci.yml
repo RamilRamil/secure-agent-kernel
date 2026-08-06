@@ -1,0 +1,37 @@
+name: kernel-ci
+
+# Green confirmation that secure-agent-kernel installs and passes its full suite
+# standalone, with no audit code present (feature 048 SC-001 / SC-002 / SC-007).
+# This is a confirmation signal — the first standalone proof was the dry-run carve
+# (T022) before this repo ever existed.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install (no web3/docker — kernel deps only)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Full kernel suite + boundary guard
+        env:
+          SR_SECRET_KEY: ${{ secrets.SR_SECRET_KEY || '00000000000000000000000000000000000000000000000000000000000000ff' }}
+          ANTHROPIC_API_KEY: dummy
+        run: |
+          # boundary guard first — the enforced kernel↔pack seam (B1–B5)
+          pytest tests/architecture/test_kernel_pack_boundary.py -v
+          # then the whole suite
+          pytest -q

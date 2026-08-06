@@ -101,6 +101,7 @@ def test_kernel_does_not_import_packs() -> None:
 #   B2  no kernel module references an audit-owned config field name
 #   B3  no kernel routing module carries a stage/poc slot identifier or sr-stage2
 #   B4  the kernel routing surface accepts an arbitrary Mapping[str,str]
+#   B5  no kernel test imports scripts.* (audit tooling — Repo B, not in the carve)
 # and widens the file scope to tests/** (a stray audit import in a kernel test
 # must be caught — that is what keeps the filter-repo path-set honest, T007).
 # Written test-first: B2/B3/B4 are RED on current code and go green as T009–T013
@@ -233,4 +234,30 @@ def test_kernel_test_tree_has_no_pack_imports() -> None:
     assert not violations, (
         f"{len(violations)} kernel-test → pack import(s) — audit tests must live under "
         f"tests/audit/** (T015), not the kernel test tree:\n  " + "\n  ".join(sorted(violations))
+    )
+
+
+# The audit tooling package. `scripts/` is NOT in the kernel filter-repo carve
+# path-set (quickstart §1a), so it never reaches Repo A. A kernel test importing
+# it would ImportError there — and, being a top-level import, would break
+# collection of *sibling* kernel tests too (a scripts.* import in a shared
+# conftest sinks the whole directory). B5 keeps the kernel test tree carve-clean.
+SCRIPTS_ROOT = "scripts"
+
+
+def test_kernel_test_tree_has_no_scripts_imports() -> None:
+    """B5: a kernel test importing scripts.* is a carve breach (audit tooling is Repo B).
+
+    RED until the scripts.*-importing audit tests are relocated to tests/audit/**;
+    the guard exists now so the relocation is verified, not assumed.
+    """
+    violations: list[str] = []
+    for path, rel in _kernel_test_files():
+        for target in _imported_modules(path):
+            if target == SCRIPTS_ROOT or target.startswith(SCRIPTS_ROOT + "."):
+                violations.append(f"{rel} -> {target}")
+    assert not violations, (
+        f"{len(violations)} kernel-test → scripts import(s) — audit-tooling tests must live "
+        f"under tests/audit/** (Repo B), not the kernel test tree; scripts/ is not in the "
+        f"kernel carve:\n  " + "\n  ".join(sorted(violations))
     )

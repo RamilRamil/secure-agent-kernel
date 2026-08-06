@@ -19,11 +19,13 @@ It covers the same MI attack-surface classes as ``AUDIT_PACK``:
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
+from uuid import uuid4
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from sr_agent.models.action import ACTION_CLASS_MAP, REVERSIBLE, ActionType
 from sr_agent.models.chat import PoCStatusEvent
+from sr_agent.models.principal import Principal
 from sr_agent.orchestrator.action import _validate_params
 from sr_agent.orchestrator.pack import ActionSpec, CapabilityPack
 from sr_agent.tools.readonly import ReadOnlyToolError, read_file
@@ -33,6 +35,24 @@ if TYPE_CHECKING:
     from sr_agent.llm_core.schemas import AgentAction
     from sr_agent.models.action import Action
     from sr_agent.orchestrator.pack import PackContext
+
+
+class FixtureSession(BaseModel):
+    """The minimal session the kernel loop needs, satisfying ``models.session.Session``.
+
+    The kernel's ``Session`` is a structural ``Protocol`` of exactly four fields
+    (``session_id``/``principal``/``iterations``/``token_budget_used``); the real
+    ``AuditSession`` also carries domain state the MI paths never touch. This
+    stand-in lets the kernel MI tests drive ``OrchestratorLoop`` with no audit
+    session type present. ``finding_ids`` mirrors the optional bookkeeping list the
+    loop appends to when a finding is persisted (``getattr(session, "finding_ids")``).
+    """
+
+    session_id: str = Field(default_factory=lambda: str(uuid4()))
+    principal: Principal
+    iterations: int = 0
+    token_budget_used: int = 0
+    finding_ids: list = Field(default_factory=list)
 
 
 # Every kernel ActionType, classed exactly as the kernel maps it. This gives the

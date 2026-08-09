@@ -5,22 +5,51 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from sr_agent.models.action import (
-    Action, ActionClass, ActionType, ValidationResult, ValidationStatus,
-    ACTION_CLASS_MAP, REVERSIBLE,
+    Action, ActionClass, ValidationResult, ValidationStatus,
 )
-from sr_agent.tools.registry import TOOL_REGISTRY
+from sr_agent.orchestrator.pack import ActionSpec
 
 if TYPE_CHECKING:
     from sr_agent.orchestrator.pack import CapabilityPack
 
 logger = logging.getLogger(__name__)
 
-# Actions in this set pause execution and wait for out-of-band human confirmation
-REQUIRES_OOB_CONFIRMATION: frozenset[ActionType] = frozenset({
-    ActionType.write_poc,
-    ActionType.run_tests,
-    ActionType.deploy_test_contract,
-})
+
+# ── Kernel-generic reads' param validators (decision D6) ─────────────────────
+# `read_file`/`search_code` are generic scope-bounded reads the kernel provides
+# to every pack. Their param validation stays kernel-side (this is the partition
+# of the old `_validate_params` ladder: the read branches remain here; the domain
+# analyzer branches moved to the pack). The path-containment guard
+# `_check_filepath` is a Principle I safety primitive the kernel owns; the pack's
+# relocated domain ladder imports it rather than re-rolling a traversal check.
+
+def _validate_read_file(action: Action, scope_root: Path) -> str | None:
+    return _check_filepath(action.params.get("path"), scope_root)
+
+
+def _validate_search_code(action: Action, scope_root: Path) -> str | None:
+    if not action.params.get("pattern"):
+        return "search_code requires 'pattern' param"
+    return _check_filepath(action.params.get("root", str(scope_root)), scope_root)
+
+
+def _noop_validate(action: Action, scope_root: Path) -> str | None:
+    """Kernel-generic machinery ids carry no path/param schema of their own."""
+    return None
+
+
+# ── Kernel-owned resolvable generic ids (decisions D4 + D6) ──────────────────
+# Resolvable ids that flow through `validate_action` and carry a kernel-provided
+# `ActionSpec`. Two sub-roles: control/memory machinery (`write_memory`,
+# `request_human_confirmation`) and the generic scope-bounded reads (`read_file`,
+# `search_code`, D6). Loop *signals* (`escalate`, `complete`) are NOT here — they
+# are `LOOP_TERMINALS`, intercepted before validation (see models/action.py).
+KERNEL_GENERIC_ACTIONS: dict[str, ActionSpec] = {
+    "read_file": ActionSpec(ActionClass.read_only, True, _validate_read_file),
+    "search_code": ActionSpec(ActionClass.read_only, True, _validate_search_code),
+    "write_memory": ActionSpec(ActionClass.memory, False, _noop_validate),
+    "request_human_confirmation": ActionSpec(ActionClass.control, True, _noop_validate),
+}
 
 
 class ActionValidationError(Exception):
@@ -28,99 +57,57 @@ class ActionValidationError(Exception):
 
 
 def validate_action(
-    action: Action, audit_root: Path, pack: "CapabilityPack | None" = None
+    action: Action, scope_root: Path, pack: "CapabilityPack | None" = None
 ) -> ValidationResult:
     """Deterministic gate before any action is executed — the kernel MECHANISM.
 
     Checks in order:
-    1. action_type is in the whitelist (pack.actions, or the legacy registry)
-    2. action_class and reversibility are annotated (from the pack's ActionSpec)
-    3. params conform to the per-action schema (types, path containment)
+    1. action_type resolves against KERNEL_GENERIC_ACTIONS ∪ pack.actions (fail-closed)
+    2. action_class and reversibility come from the resolved ActionSpec
+    3. params conform to the resolved validator (types, path containment)
     4. WRITE_EXECUTE actions flagged as requiring out-of-band confirmation
 
-    The pack supplies each action's *class*, reversibility, and param validator
-    (`pack.actions`), but the confirmation requirement is **kernel-derived** from
-    `action_class == write_execute` (FR-005, R2) — a pack has no field to skip
-    it. `write_execute` is exactly the legacy `REQUIRES_OOB_CONFIRMATION` set, so
-    this is behavior-identical. When `pack is None`, the legacy audit-coupled path
-    runs (transitional, until callers pass AUDIT_PACK and US1 removes it).
+    The taxonomy is OPEN: `action.action_type` is a free string. Domain ids are
+    supplied by the pack (`pack.actions`); the kernel-generic ids resolve from
+    `KERNEL_GENERIC_ACTIONS` even when no pack is active. An id in neither is
+    rejected (fail-closed) — never silently defaulted to `read_only`. The
+    confirmation requirement is **kernel-derived** from `action_class ==
+    write_execute` (a pack has no field to skip it).
 
     Returns ValidationResult — never raises. Caller decides how to handle rejection.
     """
-    key = action.action_type.value if hasattr(action.action_type, "value") else str(action.action_type)
+    key = action.action_type  # free string id (open taxonomy) — no enum
 
-    # ── 1. Whitelist + 2. annotate class/reversibility ───────────────────
+    # ── 1. Resolve id vs KERNEL_GENERIC_ACTIONS ∪ pack.actions (fail-closed) ──
+    resolution: dict[str, ActionSpec] = dict(KERNEL_GENERIC_ACTIONS)
     if pack is not None:
-        spec = pack.actions.get(key)
-        if spec is None:
-            return ValidationResult(
-                status=ValidationStatus.rejected,
-                rejection_reason=f"Unknown action type: {key!r}",
-            )
-        action.action_class = spec.action_class
-        action.is_reversible = spec.is_reversible
-        validate_params = spec.validate_params
-    else:
-        if key not in TOOL_REGISTRY:
-            return ValidationResult(
-                status=ValidationStatus.rejected,
-                rejection_reason=f"Unknown action type: {key!r}",
-            )
-        action.action_class = ACTION_CLASS_MAP[action.action_type]
-        action.is_reversible = REVERSIBLE[action.action_type]
-        validate_params = _validate_params
+        resolution.update(pack.actions)
 
-    # ── 3. Per-action param validation (fail-closed: kernel still checks
-    #        path-containment below regardless of what the pack validator does) ──
-    reason = validate_params(action, audit_root)
+    spec = resolution.get(key)
+    if spec is None:
+        return ValidationResult(
+            status=ValidationStatus.rejected,
+            rejection_reason=f"Unknown action type: {key!r}",
+        )
+
+    # ── 2. Annotate class/reversibility from the resolved ActionSpec ──────────
+    action.action_class = spec.action_class
+    action.is_reversible = spec.is_reversible
+
+    # ── 3. Per-action param validation (fail-closed: path-containment is applied
+    #        by the resolved validator; kernel-generic reads keep their guard) ──
+    reason = spec.validate_params(action, scope_root)
     if reason:
         return ValidationResult(status=ValidationStatus.rejected, rejection_reason=reason)
 
-    # ── 4. Confirmation — KERNEL RULE, derived from class (FR-005). A pack
-    #        cannot mark a write_execute action as skip-confirmation: there is
-    #        no such field, and the requirement is computed here, not read. ──
+    # ── 4. Confirmation — KERNEL RULE, derived from class. A pack cannot mark a
+    #        write_execute action skip-confirmation: there is no such field, and
+    #        the requirement is computed here, not read. ──
     if action.action_class == ActionClass.write_execute:
         action.human_confirmation = False  # pending — must be set True before execution
         logger.info("Action %s requires out-of-band human confirmation", key)
 
     return ValidationResult(status=ValidationStatus.approved)
-
-
-def _validate_params(action: Action, audit_root: Path) -> str | None:
-    """Return rejection reason string, or None if params are valid."""
-    params = action.params
-
-    if action.action_type == ActionType.read_file:
-        return _check_filepath(params.get("path"), audit_root)
-
-    if action.action_type == ActionType.search_code:
-        if not params.get("pattern"):
-            return "search_code requires 'pattern' param"
-        return _check_filepath(params.get("root", str(audit_root)), audit_root)
-
-    if action.action_type == ActionType.run_slither:
-        return _check_filepath(params.get("target"), audit_root)
-
-    if action.action_type == ActionType.run_mythril:
-        return _check_filepath(params.get("target"), audit_root)
-
-    if action.action_type == ActionType.analyze_transactions:
-        address = params.get("address")
-        if not address:
-            return "analyze_transactions requires 'address' param"
-        blocks = params.get("max_blocks", 0)
-        if int(blocks) > 10_000:
-            return f"analyze_transactions max_blocks limit is 10000, got {blocks}"
-
-    if action.action_type == ActionType.write_poc:
-        return _check_filepath(params.get("finding_id"), None, require_str=True)
-
-    if action.action_type == ActionType.deploy_test_contract:
-        network = params.get("network", "")
-        if network not in ("anvil", "localhost"):
-            return f"deploy_test_contract only allowed on anvil/localhost, got {network!r}"
-
-    return None
 
 
 def _check_filepath(
@@ -142,5 +129,5 @@ def _check_filepath(
         return f"Cannot resolve path: {raw!r}"
 
     if not resolved.is_relative_to(root_resolved):
-        return f"Path '{raw}' escapes audit root — possible path traversal"
+        return f"Path '{raw}' escapes scope root — possible path traversal"
     return None

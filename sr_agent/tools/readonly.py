@@ -1,11 +1,9 @@
-"""Read-only analysis tools (US-domain, T049).
+"""Kernel-generic read-only tools (Constitution III / decision D6).
 
-Pure stdlib, no network, no LLM. These are the most-used Stage 1 tools.
-Path containment is re-checked here as defense in depth even though
-validate_action already gates the action before dispatch.
-
-Slither / Mythril wiring (T050/T051) runs via DockerSandbox and is added
-in a later block.
+Pure stdlib, no network, no LLM. Task-agnostic, scope-bounded reads the kernel
+provides to every capability pack: `read_file` and `search_code`. Path
+containment is re-checked here as defense in depth even though `validate_action`
+already gates the action before dispatch.
 """
 from __future__ import annotations
 
@@ -15,7 +13,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-MAX_FILE_BYTES = 1_000_000  # 1 MB guard — contract files are small
+MAX_FILE_BYTES = 1_000_000  # 1 MB guard
 DEFAULT_MAX_HITS = 200
 
 
@@ -23,18 +21,18 @@ class ReadOnlyToolError(Exception):
     pass
 
 
-def _contained(raw: str | Path, audit_root: Path) -> Path:
-    """Resolve a path and ensure it stays within audit_root (path-traversal guard)."""
+def _contained(raw: str | Path, scope_root: Path) -> Path:
+    """Resolve a path and ensure it stays within scope_root (path-traversal guard)."""
     resolved = Path(raw).resolve()
-    root = Path(audit_root).resolve()
+    root = Path(scope_root).resolve()
     if not resolved.is_relative_to(root):
-        raise ReadOnlyToolError(f"Path {str(raw)!r} escapes audit root")
+        raise ReadOnlyToolError(f"Path {str(raw)!r} escapes scope root")
     return resolved
 
 
-def read_file(path: str | Path, audit_root: Path) -> str:
-    """Return the text of a file inside the audit root."""
-    resolved = _contained(path, audit_root)
+def read_file(path: str | Path, scope_root: Path) -> str:
+    """Return the text of a file inside the scope root."""
+    resolved = _contained(path, scope_root)
     if not resolved.is_file():
         raise ReadOnlyToolError(f"Not a file: {str(path)!r}")
     if resolved.stat().st_size > MAX_FILE_BYTES:
@@ -54,10 +52,15 @@ class SearchHit:
 def search_code(
     pattern: str,
     root: str | Path,
-    file_ext: str = ".sol",
+    file_ext: str,
     max_hits: int = DEFAULT_MAX_HITS,
 ) -> list[SearchHit]:
-    """Substring search across files under root.
+    """Substring search across files under root, filtered by file_ext.
+
+    `file_ext` is REQUIRED (no default): the file-extension filter is a caller
+    (pack) decision, never a kernel-baked domain assumption (D6). A missed
+    call-site fails loud with a TypeError rather than silently widening or
+    narrowing the search scope.
 
     Substring (not regex) by design: the pattern is attacker-influenceable, so
     we avoid any ReDoS surface. Returns at most max_hits, paths relative to root.

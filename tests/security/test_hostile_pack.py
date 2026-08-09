@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from sr_agent.models.action import Action, ActionClass, ActionType, ValidationStatus
+from sr_agent.models.action import Action, ActionClass, ValidationStatus
 from sr_agent.orchestrator.action import validate_action
 from sr_agent.orchestrator.pack import ActionSpec, CapabilityPack, PackContext
 
@@ -48,7 +48,7 @@ def test_H1_write_execute_is_always_gated(tmp_path: Path) -> None:
         {"write_poc": ActionSpec(ActionClass.write_execute, is_reversible=False,
                                  validate_params=_PERMISSIVE)}
     )
-    action = Action(action_type=ActionType.write_poc, params={"finding_id": "F-1"})
+    action = Action(action_type="write_poc", params={"finding_id": "F-1"})
     result = validate_action(action, tmp_path, pack)
     assert result.status is ValidationStatus.approved
     # gated: pending out-of-band confirmation, kernel-derived from the class
@@ -79,7 +79,7 @@ def test_H1_class_mislabel_is_bounded_not_open(tmp_path: Path) -> None:
                                  validate_params=_PERMISSIVE)}
     )
     # A file OUTSIDE audit_root, mislabeled read_only with a permissive validator:
-    action = Action(action_type=ActionType.read_file, params={"path": "/etc/passwd"})
+    action = Action(action_type="read_file", params={"path": "/etc/passwd"})
     result = validate_action(action, tmp_path, pack)
     assert result.status is ValidationStatus.approved  # pack's permissive validator let it through
     # ...but the kernel tool itself refuses to read outside audit_root (H3 covers this):
@@ -96,8 +96,10 @@ def test_H2_packcontext_has_no_memory_handle() -> None:
     every write and sets the tier (FR-006, strengthened 2026-07-03)."""
     ctx_fields = {f.name for f in dataclasses.fields(PackContext)}
     assert "memory" not in ctx_fields
-    # the only capabilities a pack gets are these — none can write memory:
-    assert ctx_fields == {"audit_root", "sandbox", "poc_dir", "wrap_data", "poc_generator"}
+    # the only capabilities a pack gets are these — none can write memory. PoC
+    # state (poc_dir/poc_generator) left the context in US5 (D2); the audit_root
+    # field was renamed scope_root in US4 (D3).
+    assert ctx_fields == {"scope_root", "sandbox", "wrap_data"}
 
 
 def test_H2_kernel_persists_findings_as_external_llm_output(tmp_path: Path) -> None:
@@ -131,3 +133,68 @@ def test_H3_sandbox_is_network_isolated_by_default() -> None:
     from sr_agent.tools.sandbox import DockerSandbox
     sig = inspect.signature(DockerSandbox.run)
     assert sig.parameters["network"].default == "none"
+
+
+# ── H4: an empty/reduced privileged_statuses covers EXACTLY the declared set ──
+# The status-gate set is no longer kernel-hardcoded (Constitution III / D5): the
+# kernel binds the ACTIVE pack's declared set into EpisodicMemory at construction.
+# A hostile or minimal pack can therefore declare FEWER statuses — but that only
+# shrinks what THAT pack protects; it cannot bypass a kernel-enforced status,
+# because post-US2 the kernel enforces none of its own. These tests pin the
+# honest residual: empty ⇒ "this pack gates nothing", NOT "the gate is disabled".
+
+from sr_agent.memory.episodic import EpisodicMemory, MemoryWriteError
+from sr_agent.models.memory import MemoryRecord, SourceType, StatusChange
+
+_H4_SECRET = b"h4-secret-key-least-32-bytes-long!!"
+
+
+def _status_record(new_status: str, source_type: SourceType) -> MemoryRecord:
+    return MemoryRecord(
+        project_id="proj", target="Vault.sol", session_id="s",
+        source_type=source_type,
+        status_change=StatusChange(
+            finding_id="F-1", old_status="open", new_status=new_status, reason="x",
+        ),
+    )
+
+
+def test_H4_empty_privileged_set_gates_nothing_but_is_not_disabled(tmp_path: Path) -> None:
+    """A pack declaring NO privileged statuses: a non-human status change to any
+    value is permitted (nothing is privileged) — the gate mechanism is intact,
+    it simply covers the empty set. This is the honest residual, not a bypass."""
+    mem = EpisodicMemory(tmp_path, _H4_SECRET, privileged_statuses=frozenset())
+    # No status is privileged, so even a non-human source may set one — and it
+    # actually reaches disk (we assert the write succeeds, not merely "no raise").
+    saved = mem.write(_status_record("anything", SourceType.llm_inference))
+    assert saved.hmac is not None
+    assert len(mem.load("proj", "Vault.sol")) == 1
+    # The mechanism is still live: the supersedes gate (a separate human-authority
+    # rule) still fires for a non-human correction — an empty privileged set does
+    # NOT disable status-rule enforcement wholesale.
+    with pytest.raises(MemoryWriteError, match="supersedes"):
+        rec = MemoryRecord(
+            project_id="proj", target="Vault.sol", session_id="s",
+            source_type=SourceType.llm_inference, supersedes="prior-id",
+            status_change=StatusChange(
+                finding_id="F-1", old_status="open", new_status="anything", reason="x",
+            ),
+        )
+        mem.write(rec)
+
+
+def test_H4_reduced_set_covers_exactly_the_declared_statuses(tmp_path: Path) -> None:
+    """A pack declaring exactly {"blessed"}: that status is gated against a
+    non-human source, but a status OUTSIDE the declared set is not — the gate
+    covers precisely the bound set, no more, no less."""
+    mem = EpisodicMemory(tmp_path, _H4_SECRET, privileged_statuses=frozenset({"blessed"}))
+    # Declared privileged status from a non-human source: blocked.
+    with pytest.raises(MemoryWriteError, match="requires source_type=human_input"):
+        mem.write(_status_record("blessed", SourceType.llm_inference))
+    # A status NOT in the declared set: permitted (under-declaration cannot be a
+    # covert widening — the pack gates only what it declared).
+    saved = mem.write(_status_record("verified_safe", SourceType.llm_inference))
+    assert saved.hmac is not None
+    # The same declared status from a human source: permitted (authority present).
+    saved_h = mem.write(_status_record("blessed", SourceType.human_input))
+    assert saved_h.hmac is not None

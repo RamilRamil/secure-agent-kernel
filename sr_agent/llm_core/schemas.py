@@ -38,7 +38,7 @@ class AgentAction(BaseModel):
     If the LLM response does not parse as AgentAction → orchestrator treats
     it as a malformed response and does NOT execute anything.
     """
-    next_action: str                            # must match ActionType enum value
+    next_action: str                            # an available action id (kernel-generic or pack-supplied); open string
     tool_params: dict = {}                      # params for next_action
     finding: FindingPayload | None = None       # new finding to persist, if any
     reasoning_summary: str = ""                 # human-readable explanation (not executed)

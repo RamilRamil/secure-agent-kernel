@@ -29,13 +29,13 @@ TRUST_LEVELS: dict[SourceType, int] = {
     SourceType.llm_inference: 1,
 }
 
-# Status values that only human_input is allowed to set.
-# Enforced in EpisodicMemory.write(), not here — models don't enforce policy.
-REQUIRES_HUMAN_CONFIRMATION: frozenset[str] = frozenset({
-    "verified_safe",
-    "skip_analysis",
-    "audit_complete",
-})
+# Kernel default: EMPTY. The effective privileged-status set is composed by the
+# kernel from the active pack's `privileged_statuses` and bound into
+# EpisodicMemory at session construction (feature 001, decision D5). The kernel
+# hardcodes no domain status; membership is entirely pack-supplied and enforced
+# in EpisodicMemory.write() against the bound set — not here (models don't
+# enforce policy). Kept as an empty kernel default for any external reference.
+REQUIRES_HUMAN_CONFIRMATION: frozenset[str] = frozenset()
 
 
 class StatusChange(BaseModel):

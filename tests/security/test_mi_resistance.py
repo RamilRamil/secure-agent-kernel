@@ -12,7 +12,7 @@ import pytest
 from pathlib import Path
 
 from tests.security.mi_scenarios import (
-    SCENARIOS, TEST_SECRET, measure_asr, run_scenario,
+    SCENARIOS, SIMULATED_PRIVILEGED_STATUSES, TEST_SECRET, measure_asr, run_scenario,
     AttackVector,
 )
 from sr_agent.memory.episodic import EpisodicMemory
@@ -20,7 +20,10 @@ from sr_agent.memory.episodic import EpisodicMemory
 
 @pytest.fixture
 def memory(tmp_path: Path) -> EpisodicMemory:
-    return EpisodicMemory(tmp_path, TEST_SECRET)
+    # Bind the pack-declared privileged-status set (D5) so the write-time status
+    # gate is genuinely active — without this the gate is inert and a "blocked"
+    # result would be dishonest (the record would actually reach disk).
+    return EpisodicMemory(tmp_path, TEST_SECRET, privileged_statuses=SIMULATED_PRIVILEGED_STATUSES)
 
 
 def test_protection_asr_below_5pct(memory):

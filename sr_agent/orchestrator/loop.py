@@ -9,11 +9,11 @@ from sr_agent.config import config
 from sr_agent.llm_core.claude_client import ClaudeClient
 from sr_agent.llm_core.schemas import AgentAction
 from sr_agent.memory.episodic import EpisodicMemory
-from sr_agent.models.action import Action, ActionType, ValidationStatus
+from sr_agent.models.action import Action, LOOP_TERMINALS, ValidationStatus
 from sr_agent.models.chat import MAX_TOOL_CALLS_PER_TURN, PoCStatusEvent, RoutingDecision
 from sr_agent.models.memory import MemoryRecord, SourceType
 from sr_agent.tools.sandbox import DockerSandbox
-from sr_agent.orchestrator.action import validate_action
+from sr_agent.orchestrator.action import KERNEL_GENERIC_ACTIONS, validate_action
 from sr_agent.orchestrator.confirmation import (
     ConfirmationStatus, check_confirmation, request_confirmation,
 )
@@ -31,7 +31,7 @@ MAX_ITERATIONS = 50
 
 
 @dataclass
-class AuditResult:
+class RunResult:
     session_id: str
     findings: list  # pack-domain findings (e.g. audit Finding); kernel treats opaque
     iterations: int
@@ -71,7 +71,7 @@ class OrchestratorLoop:
         self,
         session: "Session",
         memory: EpisodicMemory,
-        audit_root: Path,
+        scope_root: Path,
         *,
         pack: "CapabilityPack",
         reasoning_provider: object | None = None,
@@ -79,8 +79,6 @@ class OrchestratorLoop:
         confirmations_dir: Path | None = None,
         confirmation_timeout_s: float = 300.0,
         sandbox: DockerSandbox | None = None,
-        poc_dir: Path | None = None,
-        poc_generator: Callable[[str], str] | None = None,
         checkpoint_fn: Callable | None = None,
         event_sink: Callable[[dict], None] | None = None,
         discovery_model: str | None = None,
@@ -88,14 +86,14 @@ class OrchestratorLoop:
     ) -> None:
         self._session = session
         self._memory = memory
-        self._audit_root = audit_root
+        self._scope_root = scope_root
         self._confirmations_dir = confirmations_dir or config.confirmations_root
         self._confirmation_timeout_s = confirmation_timeout_s
-        # PoC execution (audit-pack, contracts/poc-execution.md): PoCs land in
-        # <audit_root>/audit/poc/ and run in the sandbox. Injectable for tests.
+        # The sandbox is a kernel-provided containment capability. PoC output dirs
+        # / generators are NOT kernel state any more (decision D2/US5): a pack that
+        # runs a write_execute PoC path carries its own — the kernel loop stays
+        # task-agnostic and threads no PoC vocabulary into PackContext.
         self._sandbox = sandbox or DockerSandbox()
-        self._poc_dir = poc_dir or (audit_root / "audit" / "poc")
-        self._poc_generator = poc_generator
         # Chat mode injects a ChatReasoningProvider (.complete() -> ReasoningOutcome).
         # The non-chat run() path lazily constructs a ClaudeClient instead — chat
         # never touches the paid API (Constitution V).
@@ -121,8 +119,7 @@ class OrchestratorLoop:
         # it cannot change control flow or any invariant.
         self._event_sink = event_sink
         self._ctx = PackContext(
-            audit_root=audit_root, sandbox=self._sandbox,
-            poc_dir=self._poc_dir, wrap_data=wrap_data, poc_generator=poc_generator,
+            scope_root=scope_root, sandbox=self._sandbox, wrap_data=wrap_data,
         )
 
         # Verify tool descriptions haven't been tampered with
@@ -137,7 +134,7 @@ class OrchestratorLoop:
         except Exception:  # a broken observer must never break the loop
             logger.debug("event_sink raised; ignoring", exc_info=True)
 
-    def run(self, system_prompt: str) -> AuditResult:
+    def run(self, system_prompt: str) -> RunResult:
         """Execute the ReAct loop until completion or resource limit."""
         iterations = 0
         last_tool_output: str | None = None
@@ -177,8 +174,8 @@ class OrchestratorLoop:
                     self._findings.append(finding)
 
             # ── Terminal actions ─────────────────────────────────────────
-            if agent_action.next_action == ActionType.escalate.value:
-                return AuditResult(
+            if agent_action.next_action == "escalate":
+                return RunResult(
                     session_id=self._session.session_id,
                     findings=self._findings,
                     iterations=iterations,
@@ -189,7 +186,7 @@ class OrchestratorLoop:
             if agent_action.next_action == "complete":
                 if self._checkpoint_fn is not None:
                     self._checkpoint_fn(self._session, self._memory)
-                return AuditResult(
+                return RunResult(
                     session_id=self._session.session_id,
                     findings=self._findings,
                     iterations=iterations,
@@ -199,10 +196,10 @@ class OrchestratorLoop:
 
             # ── Validate action ──────────────────────────────────────────
             action = Action(
-                action_type=ActionType(agent_action.next_action),
+                action_type=agent_action.next_action,
                 params=agent_action.tool_params,
             )
-            result = validate_action(action, self._audit_root, self._pack)
+            result = validate_action(action, self._scope_root, self._pack)
 
             if result.status == ValidationStatus.rejected:
                 logger.warning(
@@ -224,7 +221,7 @@ class OrchestratorLoop:
                 req = request_confirmation(action, self._confirmations_dir)
                 logger.info(
                     "Pausing for out-of-band confirmation %s (action %s)",
-                    req.confirmation_id, action.action_type.value,
+                    req.confirmation_id, action.action_type,
                 )
                 status = check_confirmation(
                     req.confirmation_id,
@@ -234,10 +231,10 @@ class OrchestratorLoop:
                 if status is not ConfirmationStatus.approved:
                     logger.warning(
                         "blocked_attempt: action %s confirmation %s was %s",
-                        action.action_type.value, req.confirmation_id, status.value,
+                        action.action_type, req.confirmation_id, status.value,
                     )
                     last_tool_output = wrap_data(
-                        f"Action {action.action_type.value!r} was {status.value} "
+                        f"Action {action.action_type!r} was {status.value} "
                         "via out-of-band confirmation — not executed.",
                         tool="orchestrator",
                         path="",
@@ -245,13 +242,13 @@ class OrchestratorLoop:
                     continue
                 action.human_confirmation = True  # approved out-of-band
                 logger.info(
-                    "Action %s approved out-of-band, proceeding", action.action_type.value
+                    "Action %s approved out-of-band, proceeding", action.action_type
                 )
 
             # ── Execute (stub — tools implemented in later phases) ───────
             last_tool_output = self._pack.dispatch(action, self._ctx)
 
-        return AuditResult(
+        return RunResult(
             session_id=self._session.session_id,
             findings=self._findings,
             iterations=iterations,
@@ -338,7 +335,7 @@ class OrchestratorLoop:
             # Terminal: the model answered directly (no tool). "complete" carries
             # the answer in reasoning_summary; "escalate" ends the turn too.
             na = agent_action.next_action
-            if na in ("complete", ActionType.escalate.value):
+            if na in LOOP_TERMINALS:
                 return TurnResult(
                     status="completed", answer=agent_action.reasoning_summary,
                     routing=routing, tool_calls=tool_calls, findings=turn_findings,
@@ -346,7 +343,9 @@ class OrchestratorLoop:
                 )
 
             # Unknown next_action → feed the rejection back as data, don't crash.
-            if na not in ActionType._value2member_map_:
+            # Consult the same resolvable set validate_action uses
+            # (KERNEL_GENERIC_ACTIONS ∪ pack.actions); terminals handled above.
+            if na not in KERNEL_GENERIC_ACTIONS and not (self._pack and na in self._pack.actions):
                 last_tool_output = wrap_data(
                     f"ACTION REJECTED: unknown next_action {na!r}",
                     tool="orchestrator", path="",
@@ -354,8 +353,8 @@ class OrchestratorLoop:
                 tool_calls += 1
                 continue
 
-            action = Action(action_type=ActionType(na), params=agent_action.tool_params)
-            result = validate_action(action, self._audit_root, self._pack)
+            action = Action(action_type=na, params=agent_action.tool_params)
+            result = validate_action(action, self._scope_root, self._pack)
             if result.status == ValidationStatus.rejected:
                 last_tool_output = wrap_data(
                     f"ACTION REJECTED: {result.rejection_reason}",
@@ -371,12 +370,12 @@ class OrchestratorLoop:
                 req = request_confirmation(action, self._confirmations_dir)
                 logger.info(
                     "chat turn paused for confirmation %s (action %s)",
-                    req.confirmation_id, action.action_type.value,
+                    req.confirmation_id, action.action_type,
                 )
                 return TurnResult(
                     status="paused_confirmation", routing=routing,
                     pending_confirmation_id=req.confirmation_id,
-                    pending_action_type=action.action_type.value,
+                    pending_action_type=action.action_type,
                     pending_action_params=dict(action.params),
                     tool_calls=tool_calls, findings=turn_findings,
                 )
@@ -384,10 +383,10 @@ class OrchestratorLoop:
             # Read-only / approved dispatch — result feeds the next iteration as DATA.
             last_tool_output = self._pack.dispatch(action, self._ctx)
             detail = action.params.get("path") or action.params.get("pattern") or ""
-            tool_summaries.append(f"{action.action_type.value} {detail}".strip())
+            tool_summaries.append(f"{action.action_type} {detail}".strip())
             tool_calls += 1
             self._emit(
-                "tool", tool=action.action_type.value, detail=detail,
+                "tool", tool=action.action_type, detail=detail,
                 budget_used=tool_calls, budget_limit=MAX_TOOL_CALLS_PER_TURN,
             )
 

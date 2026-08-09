@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from sr_agent.memory import hmac as hmac_module
-from sr_agent.models.memory import MemoryRecord, REQUIRES_HUMAN_CONFIRMATION, SourceType
+from sr_agent.models.memory import MemoryRecord, SourceType
 
 if TYPE_CHECKING:
     from sr_agent.models.principal import Principal
@@ -44,9 +44,20 @@ class PrincipalMismatch(Exception):
 
 
 class EpisodicMemory:
-    def __init__(self, memory_root: Path, secret_key: bytes) -> None:
+    def __init__(
+        self,
+        memory_root: Path,
+        secret_key: bytes,
+        privileged_statuses: frozenset[str] = frozenset(),
+    ) -> None:
         self._root = memory_root
         self._secret_key = secret_key
+        # Privileged-status set composed by the kernel from the active pack's
+        # `privileged_statuses` and BOUND here at session construction (D5).
+        # Immutable for the session — no model turn or tool result may widen or
+        # narrow it. Empty means "this pack has no privileged statuses" (H4),
+        # NOT "gate disabled".
+        self._privileged_statuses = frozenset(privileged_statuses)
 
     def _path(self, project_id: str, target: str) -> Path:
         safe_target = target.replace("/", "_").replace(":", "__")
@@ -206,14 +217,17 @@ class EpisodicMemory:
 
         return [r for r in records.values() if r.record_id not in superseded_ids]
 
-    @staticmethod
-    def _enforce_status_rules(record: MemoryRecord) -> None:
-        """Raise if privileged status is set by an untrusted source type."""
+    def _enforce_status_rules(self, record: MemoryRecord) -> None:
+        """Raise if privileged status is set by an untrusted source type.
+
+        Membership comes from the pack-declared set bound at construction
+        (`self._privileged_statuses`, D5), not a kernel-hardcoded constant.
+        """
         if record.status_change is None:
             return
 
         new_status = record.status_change.new_status
-        if new_status in REQUIRES_HUMAN_CONFIRMATION:
+        if new_status in self._privileged_statuses:
             if record.source_type != SourceType.human_input:
                 raise MemoryWriteError(
                     f"Status '{new_status}' requires source_type=human_input, "

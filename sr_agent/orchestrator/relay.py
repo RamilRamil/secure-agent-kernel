@@ -8,7 +8,7 @@ Design decisions: research/relay-architecture.md (forks B/B/middle/yes).
 
 Security properties enforced here:
   - The adapter extracts ONLY findings — never a status_change. A relayed
-    response therefore cannot carry a verified_safe/audit_complete claim into
+    response therefore cannot carry a privileged-status claim into
     memory (relay != authoring, enforced structurally).
   - Each finding is validated into a Finding (hallucinated severities or
     bastet_tags are rejected per-entry, never reach memory).

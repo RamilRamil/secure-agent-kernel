@@ -6,26 +6,6 @@ from uuid import uuid4
 from pydantic import BaseModel, Field
 
 
-class ActionType(str, Enum):
-    # ── READ-ONLY ────────────────────────────────────────────────────────
-    read_file = "read_file"
-    search_code = "search_code"
-    build_graph = "build_graph"
-    run_slither = "run_slither"
-    run_mythril = "run_mythril"
-    run_auditor_skill = "run_auditor_skill"
-    analyze_transactions = "analyze_transactions"
-    decompile_bytecode = "decompile_bytecode"
-    # ── WRITE / EXECUTE (require out-of-band human confirmation) ─────────
-    write_poc = "write_poc"
-    run_tests = "run_tests"
-    deploy_test_contract = "deploy_test_contract"
-    # ── MEMORY / CONTROL ─────────────────────────────────────────────────
-    write_memory = "write_memory"
-    request_human_confirmation = "request_human_confirmation"
-    escalate = "escalate"
-
-
 class ActionClass(str, Enum):
     read_only = "read_only"
     write_execute = "write_execute"
@@ -33,40 +13,23 @@ class ActionClass(str, Enum):
     control = "control"
 
 
-# Which action types belong to which class
-ACTION_CLASS_MAP: dict[ActionType, ActionClass] = {
-    ActionType.read_file: ActionClass.read_only,
-    ActionType.search_code: ActionClass.read_only,
-    ActionType.build_graph: ActionClass.read_only,
-    ActionType.run_slither: ActionClass.read_only,
-    ActionType.run_mythril: ActionClass.read_only,
-    ActionType.run_auditor_skill: ActionClass.read_only,
-    ActionType.analyze_transactions: ActionClass.read_only,
-    ActionType.decompile_bytecode: ActionClass.read_only,
-    ActionType.write_poc: ActionClass.write_execute,
-    ActionType.run_tests: ActionClass.write_execute,
-    ActionType.deploy_test_contract: ActionClass.write_execute,
-    ActionType.write_memory: ActionClass.memory,
-    ActionType.request_human_confirmation: ActionClass.control,
-    ActionType.escalate: ActionClass.control,
-}
-
-REVERSIBLE: dict[ActionType, bool] = {
-    ActionType.read_file: True,
-    ActionType.search_code: True,
-    ActionType.build_graph: True,
-    ActionType.run_slither: True,
-    ActionType.run_mythril: True,
-    ActionType.run_auditor_skill: True,
-    ActionType.analyze_transactions: True,
-    ActionType.decompile_bytecode: True,
-    ActionType.write_poc: False,
-    ActionType.run_tests: False,
-    ActionType.deploy_test_contract: False,
-    ActionType.write_memory: False,
-    ActionType.request_human_confirmation: True,
-    ActionType.escalate: True,
-}
+# ── Kernel-owned generic action ids (Constitution III) ───────────────────────
+# The kernel's action taxonomy is OPEN: `Action.action_type` is a free string and
+# the *domain* action ids (audit analyzers) live in the active capability pack.
+# What the kernel still owns are the *generic*, non-domain ids it provides to
+# EVERY pack, split by validation behavior (decision D4):
+#
+#   * KERNEL_GENERIC_ACTIONS — *resolvable* ids that reach `validate_action` and
+#     carry a kernel-provided `ActionSpec`. Defined in `orchestrator/action.py`
+#     (co-located with `validate_action` and the `_check_filepath` containment
+#     primitive) to avoid a models→orchestrator import cycle, since `ActionSpec`
+#     lives in `orchestrator/pack.py`. Two sub-roles share the set: the
+#     control/memory machinery (`write_memory`, `request_human_confirmation`) and
+#     the generic scope-bounded reads (`read_file`, `search_code`) — decision D6.
+#   * LOOP_TERMINALS — loop *signals* intercepted BEFORE validation; they carry
+#     no `ActionSpec` and never reach `validate_action`, so they are bare strings
+#     defined here.
+LOOP_TERMINALS: frozenset[str] = frozenset({"escalate", "complete"})
 
 
 class ValidationStatus(str, Enum):
@@ -82,10 +45,12 @@ class ValidationResult(BaseModel):
 
 class Action(BaseModel):
     action_id: str = Field(default_factory=lambda: str(uuid4()))
-    action_type: ActionType
+    # Open string id — resolved against KERNEL_GENERIC_ACTIONS ∪ pack.actions by
+    # `validate_action`; the kernel defines no closed domain enum here.
+    action_type: str
     params: dict = Field(default_factory=dict)
 
-    # Derived from action_type — orchestrator fills these
+    # Derived from action_type by the orchestrator, from the resolved ActionSpec
     action_class: ActionClass | None = None
     is_reversible: bool | None = None
 

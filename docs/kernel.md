@@ -142,22 +142,39 @@ no lever to skip the OOB gate, forge a trust tier, or touch the HMAC store. Ther
 intentionally **no dynamic plugin registry** — the one pack is wired explicitly (YAGNI);
 the boundary is the value.
 
-## Honest scope — task-agnostic at the *guarantee* level
+## Scope — task-agnostic at the guarantee *and* the identifier level
 
-The kernel's **guarantees** are genuinely task-agnostic and MI-proven against an
-in-repo [fixture pack](../tests/fixtures/pack/) with no audit code present. But some
-**names and types still carry audit vocabulary** from the pre-split monorepo (the
-kernel ↔ pack split, feature 048):
+The kernel's **guarantees** are task-agnostic and MI-proven against an in-repo
+[fixture pack](../tests/fixtures/pack/) with no audit code present. Feature 001
+(task-agnostic action contract) closed the naming residue the pre-split monorepo
+left behind:
 
-- `PackContext` exposes `audit_root`, `poc_dir`, `poc_generator` (audit-flavoured
-  field names) alongside the generic `sandbox` / `wrap_data`.
-- `orchestrator/loop.py` still names an `AuditResult` dataclass and `_persist_finding`.
-- `orchestrator/action.py::_validate_params(action, audit_root)` uses the audit name.
+- **Action taxonomy is OPEN.** `Action.action_type` is a free `str`, not a closed
+  domain enum. Domain analyzer ids (`run_slither`, `write_poc`, …) live in the
+  pack's `actions`; the kernel keeps only the generic, non-domain ids it provides
+  to every pack — the control/memory machinery (`write_memory`,
+  `request_human_confirmation`) and the scope-bounded reads (`read_file`,
+  `search_code`, decision D6). `validate_action` resolves an id against
+  `KERNEL_GENERIC_ACTIONS ∪ pack.actions`, fail-closed on a miss.
+- **Privileged statuses are pack-declared.** The kernel hardcodes none; each pack
+  declares its own and the kernel binds that set into `EpisodicMemory` at session
+  construction (decision D5). Empty = "this pack gates nothing", not "gate off".
+- **`PackContext` is domain-neutral:** `scope_root`, `sandbox`, `wrap_data`. PoC
+  state (`poc_dir`/`poc_generator`) left the context (decision D2) — a pack that
+  runs a write_execute PoC path carries its own. A transitional `__getattr__` shim
+  answers `ctx.audit_root` → `scope_root` with a `DeprecationWarning` until the
+  audit pack migrates (removed in PR-3).
+- `orchestrator/loop.py` returns a domain-neutral `RunResult`; the read validators
+  take `scope_root`.
 
-None of this weakens an invariant — the boundary tests pass, and no pack can reach past
-`PackContext`. It is naming residue: **task-agnostic where it counts (the security
-mechanisms), not yet fully at the type/identifier level.** A future pass can rename
-these to domain-neutral terms without touching behaviour.
+These are pinned by boundary test **B6** (`tests/architecture/test_kernel_pack_boundary.py`):
+an open `action_type`, no domain id or privileged status operative in `sr_agent/`,
+and the exact kernel-generic / loop-terminal sets.
+
+**Remaining residue (separate concern):** the *finding model* still carries audit
+vocabulary — `FindingPayload.bastet_tag` in `llm_core/schemas.py` and the relay
+`_RESPONSE_SCHEMA`. De-domaining the finding schema is out of feature 001's scope
+(action taxonomy + statuses) and is tracked as its own follow-up.
 
 ## What it needs to run
 

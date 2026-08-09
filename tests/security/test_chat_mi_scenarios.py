@@ -132,3 +132,47 @@ def test_status_change_from_non_human_source_escalates(tmp_path):
     result = evaluate_triggers(action=None, record=record, finding=None, session=session)
     assert result.triggered
     assert result.trigger.value == "memory_status_change"
+
+
+# ── SC-009 (feature 001, US3): the open taxonomy holds on the chat path too ──
+# The chat loop resolves `next_action` against the SAME KERNEL_GENERIC_ACTIONS ∪
+# pack.actions set as the batch path (loop.py:349-360). An id in neither is fed
+# back as inert DATA (never dispatched); a write_execute domain id gates for
+# out-of-band confirmation identically to the batch pipeline.
+
+def _act(next_action, **params) -> ReasoningOutcome:
+    return ReasoningOutcome(
+        kind="action",
+        agent_action=AgentAction(next_action=next_action, tool_params=params),
+        tier="local",
+    )
+
+
+def test_sc009_unknown_next_action_is_rejected_as_inert_data(tmp_path):
+    # First turn step emits an id in neither the generic set nor FIXTURE_PACK;
+    # the loop rejects it, feeds the rejection back as DATA, and continues to the
+    # scripted `complete`. Nothing is dispatched for the unknown id.
+    provider = ScriptedProvider(_act("totally_unknown", x=1), _done("done"))
+    loop, session, memory = _setup(tmp_path, provider)
+    result = loop.run_turn("do a weird thing", system_prompt="")
+    assert result.status == "completed"
+    # The rejection re-entered the model context wrapped as DATA (not executed).
+    fed_back = "\n".join(m["content"] for m in provider.last_messages)
+    assert "[DATA START" in fed_back and "[DATA END]" in fed_back
+    assert "ACTION REJECTED" in fed_back and "totally_unknown" in fed_back
+    # No status change, no side effect reached memory.
+    assert _status_change_records(memory) == []
+
+
+def test_sc009_write_execute_domain_action_gates_for_confirmation(tmp_path):
+    # `do_thing` is a pack-declared write_execute id — the chat loop must PAUSE
+    # for out-of-band confirmation, exactly as the batch path does, with no
+    # shortcut around the gate (Constitution II).
+    provider = ScriptedProvider(_act("do_thing", finding_id="F-1"))
+    loop, session, memory = _setup(tmp_path, provider)
+    result = loop.run_turn("write the thing", system_prompt="")
+    assert result.status == "paused_confirmation"
+    assert result.pending_action_type == "do_thing"
+    assert result.pending_confirmation_id
+    # It paused BEFORE executing — nothing was written to memory.
+    assert _status_change_records(memory) == []

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "secure-agent-kernel"
-version = "0.2.0"
+version = "0.3.0"
 description = "Task-agnostic, memory-injection-resistant agent kernel (importable as sr_agent)"
 license = "MIT"
 requires-python = ">=3.11"

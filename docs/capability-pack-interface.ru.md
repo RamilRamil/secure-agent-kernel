@@ -28,9 +28,9 @@ sources:
 ```python
 CapabilityPack(
     name,                 # str
-    actions,              # Mapping[str, ActionSpec]
+    actions,              # Mapping[str, ActionSpec] — ДОМЕННЫЕ id действий пака
     tools,                # Sequence[ToolDefinition]
-    privileged_statuses,  # frozenset[str] — доменные статусы, доступные только human_input
+    privileged_statuses,  # frozenset[str] — объявляемые паком статусы, доступные только human_input
     reasoning_prompt,     # str
     dispatch,             # (Action, PackContext) -> str            (read-only / одобренный путь)
     execute_confirmed,    # (Action, PackContext) -> (str, event?)  (пост-OOB путь)
@@ -40,15 +40,23 @@ CapabilityPack(
 )
 ```
 
+- **Открытая таксономия.** `Action.action_type` — свободная строка. Пак владеет
+  **доменными** id действий (`pack.actions`) *и* своим **набором привилегированных
+  статусов**; ядро держит только обобщённые, недоменные id, которые оно предоставляет
+  каждому паку — control/memory-машинерию (`write_memory`, `request_human_confirmation`)
+  **и** scope-ограниченные чтения (`read_file`, `search_code`, решение D6). `validate_action`
+  резолвит id против `KERNEL_GENERIC_ACTIONS ∪ pack.actions` и **fail-closed** при промахе.
 - **`ActionSpec`** = `(action_class, is_reversible, validate_params)`. `action_class` —
   **единственный** рычаг подтверждения у пака; правило «`write_execute ⇒ confirm`» выводит
   само ядро. Отсутствующий или пермиссивный `validate_params` **fail closed**: whitelist
   ядра, path-containment и sandbox всё равно применяются.
 - **`PackContext`** — узкая least-privilege-поверхность, отдаваемая каждому callable пака:
-  `audit_root`, `sandbox`, `poc_dir`, `wrap_data` и опциональный `poc_generator`. Это
-  **никогда loop и никогда handle на запись памяти.** Пак возвращает доменные артефакты
-  (`persist_finding` возвращает находку; `execute_confirmed` — событие статуса); каждую
-  запись в память делает *ядро* и само выставляет тир источника.
+  `scope_root`, `sandbox`, `wrap_data`. Это **никогда loop и никогда handle на запись
+  памяти**, и в нём **нет PoC-состояния** (`poc_dir`/`poc_generator` — на стороне пака,
+  решение D2). Пак возвращает доменные артефакты (`persist_finding` возвращает находку;
+  `execute_confirmed` — событие статуса); каждую запись в память делает *ядро* и само
+  выставляет тир источника. (Переходный `__getattr__`-шим ещё отвечает на `ctx.audit_root`
+  → `scope_root` с `DeprecationWarning`, пока аудит-пак не мигрирует; снимается в PR-3.)
 
 ## Свойство: пак не может понизить guardrail
 
@@ -66,14 +74,18 @@ CapabilityPack(
   сообщённые моделью, ядро сохраняет как `external_llm_output`, никогда не повышая до
   `human_input`.
 - **H3 — не может выйти из containment.** Даже с пермиссивным `validate_params`
-  принадлежащий ядру `read_file` отказывает путям вне `audit_root`, а `DockerSandbox.run`
+  принадлежащий ядру `read_file` отказывает путям вне `scope_root`, а `DockerSandbox.run`
   по умолчанию `--network none` — пак получает лишь *handle* sandbox, не его политику.
+- **H4 — недообъявление не обходит status-гейт.** Пак с *пустым* или *суженным*
+  `privileged_statuses` гейтит ровно свой объявленный набор (пустой ⇒ «ничего не
+  привилегировано», а не «гейт выключен») — он не может обойти статус, энфорсимый ядром,
+  потому что после открытия таксономии ядро не энфорсит ни одного своего.
 
 ### Честный остаток
 
 Пак **может** промаркировать запись как `read_only` (`action_class` — действительно его
 рычаг). Этот остаток намеренно закреплён `test_H1_class_mislabel_is_bounded_not_open`: даже
-промаркированный неверно, `read_file`/`search_code` обеспечивают `audit_root`, а исполнение
+промаркированный неверно, `read_file`/`search_code` обеспечивают `scope_root`, а исполнение
 инструментов идёт в сетево-изолированном sandbox. Дверь **ограничена безусловным
 containment, а не закрыта** — и тест существует, чтобы любое будущее изменение, её
 расширяющее, было замечено.
@@ -90,12 +102,13 @@ containment, а не закрыта** — и тест существует, чт
 | **B3** | ни один routing-модуль ядра не несёт stage/PoC-слот-идентификатор или дефолт `sr-stage2` — роутинг shape-agnostic |
 | **B4** | роутер ядра резолвит произвольный `Mapping[str, str]`; отсутствующая роль поднимает `KeyError`, никогда молчаливый дефолт |
 | **B5** | ни один тест ядра не импортирует audit-only тулинг (`scripts.*` / `frontend.*`) |
+| **B6** | открытая таксономия не понизила ни одного guardrail: `action_type` — не закрытый доменный enum; ни один доменный id действия или привилегированный статус не операционен в `sr_agent/` (на AST); `KERNEL_GENERIC_ACTIONS` и `LOOP_TERMINALS` — ровно свои task-agnostic-наборы и не пересекаются; и в `PackContext` нет реального поля `poc_*` / `audit_root` |
 
-Обрати внимание, что B3 **не** флагует: `poc_dir` / `poc_generator` в `loop.py` — это
-легитимные пути исполнения PoC, а не слоты моделей, поэтому дисциплина границы осознанно
-оставляет эти audit-именованные *имена* на месте. Это и есть точная граница между
-«task-agnostic там, где важно» (импорты, конфиг, роутинг — все проверенно чисты) и
-терпимым остаточным именованием, описанным в [kernel.ru.md](kernel.ru.md).
+B6 (фича 001) — анти-регрессионный латч открытой таксономии: верни в ядро доменный id или
+поле `poc_*` — и он краснеет. Он вытесняет старую B3-толерантность к остаточному именованию:
+`poc_dir`/`poc_generator` и `audit_root`/`AuditResult` теперь ушли из ядра начисто
+(остаётся лишь переходный `audit_root`-шим, снимаемый в PR-3), так что на уровне
+действий/контекста терпимого остаточного именования больше нет — см. [kernel.ru.md](kernel.ru.md).
 
 ## Доказано без задачного кода
 

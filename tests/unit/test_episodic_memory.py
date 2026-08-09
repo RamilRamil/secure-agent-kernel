@@ -10,7 +10,12 @@ SECRET = b"test-secret-key-32-bytes-exactly!"
 
 @pytest.fixture
 def memory(tmp_path: Path) -> EpisodicMemory:
-    return EpisodicMemory(tmp_path, SECRET)
+    # The privileged-status set is NOT kernel-hardcoded any more (Constitution
+    # III / decision D5): the kernel binds the ACTIVE pack's declared set into
+    # EpisodicMemory at session construction. Here we bind a representative set
+    # (as the audit pack would declare) so the status-gate tests exercise the
+    # same enforcement the kernel applies at runtime.
+    return EpisodicMemory(tmp_path, SECRET, privileged_statuses=frozenset({"verified_safe"}))
 
 
 def _make_record(**kwargs) -> MemoryRecord:

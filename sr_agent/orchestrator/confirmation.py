@@ -54,7 +54,7 @@ def request_confirmation(action: Action, confirmations_dir: Path) -> Confirmatio
 
     payload = {
         "confirmation_id": confirmation_id,
-        "action_type": action.action_type.value,
+        "action_type": action.action_type,
         "params": action.params,
         "created_at": created_at,
         "status": ConfirmationStatus.pending.value,
@@ -66,11 +66,11 @@ def request_confirmation(action: Action, confirmations_dir: Path) -> Confirmatio
 
     logger.info(
         "OOB confirmation requested: %s for action %s",
-        confirmation_id, action.action_type.value,
+        confirmation_id, action.action_type,
     )
     return ConfirmationRequest(
         confirmation_id=confirmation_id,
-        action_type=action.action_type.value,
+        action_type=action.action_type,
         params=action.params,
         created_at=created_at,
         path=path,

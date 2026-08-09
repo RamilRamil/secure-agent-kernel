@@ -17,7 +17,7 @@ from uuid import uuid4
 from pydantic import BaseModel, Field, model_validator
 
 from sr_agent.llm_core.schemas import AgentAction, EscalationTrigger
-from sr_agent.models.action import Action, ActionType, ValidationResult
+from sr_agent.models.action import Action, ValidationResult
 from sr_agent.models.principal import Principal
 from sr_agent.models.memory import SourceType
 
@@ -122,7 +122,7 @@ class ConsequentialActionNotice(BaseModel):
 
     Not a soft gate — shown as the confirmation request is filed (FR-008/FR-013).
     """
-    action_type: ActionType
+    action_type: str
     action_params: dict = Field(default_factory=dict)
     confirmation_id: str
     shown_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

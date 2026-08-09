@@ -19,7 +19,6 @@ the loop/action modules that consume it.
 """
 from __future__ import annotations
 
-import warnings
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable, Mapping, Sequence
 
@@ -69,21 +68,6 @@ class PackContext:
     scope_root: "Path"
     sandbox: "DockerSandbox"
     wrap_data: Callable[..., str]
-
-    def __getattr__(self, name: str):
-        # Transitional shim (decision D3, removed in PR-3): the field was renamed
-        # `audit_root` → `scope_root`. A pack pinned to the pre-rename kernel still
-        # reads `ctx.audit_root`; delegate with a deprecation signal until
-        # araratsec PR-2 migrates the call-sites. __getattr__ fires ONLY for names
-        # that are not real fields, so `scope_root` never routes through here.
-        if name == "audit_root":
-            warnings.warn(
-                "PackContext.audit_root is deprecated; use scope_root "
-                "(the shim is removed in the next kernel major).",
-                DeprecationWarning, stacklevel=2,
-            )
-            return self.scope_root
-        raise AttributeError(name)
 
 
 @dataclass(frozen=True)

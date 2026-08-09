@@ -376,9 +376,9 @@ def test_B6d_kernel_generic_and_terminals_are_exact_and_disjoint() -> None:
 
 def test_B6e_packcontext_carries_no_poc_or_audit_root_field() -> None:
     """(e, US4/US5): PoC state left PackContext (D2) and `audit_root` was renamed
-    `scope_root` (D3). No `poc_*` or `audit_root` REAL field remains — only the
-    transitional `__getattr__` shim answers `ctx.audit_root`, and that shim is
-    removed in PR-3 (T027)."""
+    `scope_root` (D3). No `poc_*` or `audit_root` field remains, and the
+    transitional `__getattr__` shim that briefly answered `ctx.audit_root` is now
+    removed (PR-3 / T027) — so `audit_root` is neither a field nor an attribute."""
     import dataclasses
 
     from sr_agent.orchestrator.pack import PackContext
@@ -389,3 +389,6 @@ def test_B6e_packcontext_carries_no_poc_or_audit_root_field() -> None:
     )
     assert "audit_root" not in fields, "audit_root must be renamed scope_root (US4/D3)"
     assert "scope_root" in fields
+    # the shim is gone: audit_root no longer resolves as an attribute either.
+    ctx = PackContext(scope_root=__import__("pathlib").Path("."), sandbox=object(), wrap_data=lambda *a, **k: "")
+    assert not hasattr(ctx, "audit_root"), "the audit_root __getattr__ shim must be removed (PR-3/T027)"

@@ -218,11 +218,18 @@ class EpisodicMemory:
         return [r for r in records.values() if r.record_id not in superseded_ids]
 
     def _enforce_status_rules(self, record: MemoryRecord) -> None:
-        """Raise if privileged status is set by an untrusted source type.
+        """Raise if privileged status / supersedes is set by an untrusted source.
 
         Membership comes from the pack-declared set bound at construction
         (`self._privileged_statuses`, D5), not a kernel-hardcoded constant.
         """
+        if record.supersedes and record.source_type != SourceType.human_input:
+            raise MemoryWriteError(
+                f"'supersedes' field requires source_type=human_input, "
+                f"got {record.source_type.value!r}. "
+                "Corrections to existing records require human authority."
+            )
+
         if record.status_change is None:
             return
 
@@ -234,10 +241,3 @@ class EpisodicMemory:
                     f"got {record.source_type.value!r}. "
                     "This is a security gate — only human operators may set this status."
                 )
-
-        if record.supersedes and record.source_type != SourceType.human_input:
-            raise MemoryWriteError(
-                f"'supersedes' field requires source_type=human_input, "
-                f"got {record.source_type.value!r}. "
-                "Corrections to existing records require human authority."
-            )

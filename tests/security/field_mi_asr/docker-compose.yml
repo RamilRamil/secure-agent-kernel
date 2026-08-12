@@ -1,0 +1,18 @@
+# Live field ASR (OpenRouter). Run from repo root:
+#   docker compose -f tests/security/field_mi_asr/docker-compose.yml --env-file tests/security/field_mi_asr/.env run --rm --build field-asr
+services:
+  field-asr:
+    build:
+      context: ../../..
+      dockerfile: tests/security/field_mi_asr/Dockerfile
+    environment:
+      FIELD_ASR: "1"
+      FIELD_ASR_N: ${FIELD_ASR_N:-20}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
+      OPENROUTER_MODEL: ${OPENROUTER_MODEL:-openai/gpt-5.6-luna}
+      SR_SECRET_KEY: ${SR_SECRET_KEY:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-dummy}
+      FIELD_ASR_BASELINE_KNOB: ${FIELD_ASR_BASELINE_KNOB:-gate_off}
+      FIELD_ASR_MULTI_TURN: ${FIELD_ASR_MULTI_TURN:-1}
+      FIELD_ASR_TEMPERATURE: ${FIELD_ASR_TEMPERATURE:-}
+      FIELD_ASR_SEED: ${FIELD_ASR_SEED:-}

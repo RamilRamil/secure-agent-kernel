@@ -66,6 +66,11 @@ class OpenRouterClient:
         # `content` (the extraction failure that surfaced with deepseek-v3.2-exp).
         if options and options.get("num_predict"):
             body["max_tokens"] = int(options["num_predict"])
+        # Optional sampling knobs for reproducible field evals (ignored if absent).
+        if options and options.get("temperature") is not None:
+            body["temperature"] = float(options["temperature"])
+        if options and options.get("seed") is not None:
+            body["seed"] = int(options["seed"])
         req = urllib.request.Request(
             BASE_URL,
             data=json.dumps(body).encode("utf-8"),

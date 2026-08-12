@@ -67,11 +67,29 @@ The Secure axis is broader than the ASR three:
 | `test_hostile_pack` | a pack cannot lower a guardrail (H1/H2/H3 — see [capability-pack-interface.md](capability-pack-interface.md)) |
 | `test_report_not_instruction` | model-authored report/finding text re-enters as DATA, never as an instruction |
 | `test_sanitize_base64_scan` | the `guardrails/sanitize` encoding-injection scan (base64/homoglyph/zero-width/morse/overlong flagged into the `[DATA]` header) |
-| `test_chat_mi_scenarios` | the MI vectors driven through a full chat turn |
+| `test_chat_mi_scenarios` | chat-surface invariants (not the MI-001..005 ASR suite): tool output re-enters as inert `[DATA]`; chat cannot write a privileged `status_change`; per-turn tool budget bounds runaway loops; unknown `next_action` rejected as `[DATA]`; pack `write_execute` pauses for OOB confirmation as on the batch path (open action taxonomy on chat — **spec-001 SC-009**) |
 | `test_kernel_pack_boundary` (B1..B5) | the kernel stays task-agnostic where it counts (imports, config fields, routing slots, arbitrary role map, test tree) |
+| `test_tool_registry_integrity` | SC-001/002/003: `verify_all_hashes` / `ToolTampered` on description tamper; unknown action id fail-closed |
+| PE / MI-007 unit | status-gate residue, `_persist_finding` → `external_llm_output`, non-human `supersedes` reject |
 
 Everything is proven against `tests/fixtures/pack/FIXTURE_PACK`, a **kernel-only** pack —
 so the guarantee holds *with no task code present*, which is the whole claim.
+
+## Additive axis: live field ASR
+
+Opt-in suite: `tests/security/field_mi_asr/` (`FIELD_ASR=1` + `OPENROUTER_API_KEY`).
+Does not replace the Secure axis. Axes / success / baseline knob contract:
+[field README](../tests/security/field_mi_asr/README.md).
+
+| Threat | Deterministic | Field | Not covered |
+|--------|---------------|-------|-------------|
+| Persist MI | `test_mi_resistance` | MI-002p/003p/006 | AUDIT_PACK exfil tool |
+| Status gate | episodic / MI-002/003 | baseline `gate_off` | — |
+| Indirect IO | `test_chat_mi_scenarios` | II-001/002 | — |
+| Tool misuse / OOB | action validation / hostile pack | TM/EA | human OOB social eng |
+| Tool hash SC | `test_tool_registry_integrity` | — | — |
+
+MI-001/004 in field measure **capability inertness** (no exfil tool), not behavioral exfil ASR.
 
 ## Running it
 

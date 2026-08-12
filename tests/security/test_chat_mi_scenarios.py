@@ -1,16 +1,16 @@
-"""US5 / feature 048 T018: the KERNEL chat surface preserves MI resistance.
+"""Chat-surface invariant smoke tests for ``OrchestratorLoop.run_turn``.
 
-The chat loop has a much higher tool-call density than the batch pipeline, so
-this is where injection is most likely tried. These tests prove the chat surface
-does not weaken the invariants: tool output stays inert DATA, the model cannot
-cause a privileged status change, the deterministic guard is not suppressible,
-and the per-turn budget bounds runaway loops (SC-005).
+Not the MI-001..005 ASR suite (``mi_scenarios.py`` / ``test_mi_resistance.py``).
+These pin that the chat convenience path does not weaken orchestration-plane
+invariants: tool output re-enters as inert ``[DATA]``; chat cannot write a
+privileged ``status_change``; the deterministic status-change guard still
+escalates non-human sources; per-turn tool budget bounds runaway loops; and
+the open action taxonomy holds on chat (unknown ``next_action`` rejected as
+``[DATA]``; pack ``write_execute`` pauses for OOB confirmation) — that last
+pair is **spec-001 SC-009**.
 
-This is the KERNEL copy: it drives ``OrchestratorLoop`` against ``FIXTURE_PACK``
-(kernel-only, tests/fixtures/pack) and imports NO audit code, so the guarantee
-is proven in Repo A with no pack present (FR-005, SC-007). The same scenarios
-run against the real ``AUDIT_PACK`` in tests/audit/security/test_chat_mi_scenarios.py;
-T019 asserts both reach ASR 0 before the real pack ever leaves the monorepo.
+Drives ``OrchestratorLoop`` against kernel-only ``FIXTURE_PACK``
+(``tests/fixtures/pack``); no audit/pack domain code imported.
 """
 from __future__ import annotations
 
@@ -75,7 +75,7 @@ def _status_change_records(memory) -> list:
     return out
 
 
-# ── T025 + T023a: tool output re-enters context as inert, DATA-wrapped ──────
+# ── tool output re-enters context as inert, DATA-wrapped ────────────────────
 
 def test_injected_tool_output_is_data_wrapped_and_inert(tmp_path):
     poisoned = tmp_path / "Evil.sol"
@@ -88,12 +88,12 @@ def test_injected_tool_output_is_data_wrapped_and_inert(tmp_path):
     tool_msgs = "\n".join(m["content"] for m in provider.last_messages)
     assert "[DATA START" in tool_msgs and _INJECTION in tool_msgs
     assert _INJECTION.split(";")[0] in tool_msgs and "[DATA END]" in tool_msgs
-    # and it caused NO privileged status change (T023a / SC-005)
+    # and it caused NO privileged status change
     assert result.status == "completed"
     assert _status_change_records(memory) == []
 
 
-# ── T023b: neither user nor model text can cause a memory status change ──────
+# ── neither user nor model text can cause a memory status change ─────────────
 
 def test_chat_never_writes_a_status_change(tmp_path):
     # A turn whose answer literally asks to mark a finding safe changes nothing —
@@ -104,7 +104,7 @@ def test_chat_never_writes_a_status_change(tmp_path):
     assert _status_change_records(memory) == []
 
 
-# ── T023c: per-turn budget bounds a runaway tool loop (SC-005) ──────────────
+# ── per-turn budget bounds a runaway tool loop ───────────────────────────────
 
 def test_runaway_tool_loop_stops_at_budget(tmp_path):
     (tmp_path / "A.sol").write_text("contract A {}\n", encoding="utf-8")
@@ -116,12 +116,12 @@ def test_runaway_tool_loop_stops_at_budget(tmp_path):
     assert result.tool_calls <= MAX_TOOL_CALLS_PER_TURN     # never exceeds the budget
 
 
-# ── T024: the deterministic status-change guard is not suppressible ─────────
+# ── deterministic status-change guard is not suppressible ────────────────────
 
 def test_status_change_from_non_human_source_escalates(tmp_path):
     # evaluate_triggers is the guard the chat provider runs every turn; a
     # status_change from a non-human source is memory_status_change regardless of
-    # any model text — this is the mechanism behind FR-004. No pack involved.
+    # any model text. No pack involved.
     principal = Principal(user_id="u", platform="cli", project_id="proj")
     session = FixtureSession(principal=principal)
     record = MemoryRecord(
@@ -134,7 +134,7 @@ def test_status_change_from_non_human_source_escalates(tmp_path):
     assert result.trigger.value == "memory_status_change"
 
 
-# ── SC-009 (feature 001, US3): the open taxonomy holds on the chat path too ──
+# ── spec-001 SC-009: open action taxonomy holds on the chat path ─────────────
 # The chat loop resolves `next_action` against the SAME KERNEL_GENERIC_ACTIONS ∪
 # pack.actions set as the batch path (loop.py:349-360). An id in neither is fed
 # back as inert DATA (never dispatched); a write_execute domain id gates for

@@ -103,3 +103,9 @@ def test_generate_passes_max_tokens_from_num_predict(captured):
 def test_generate_omits_max_tokens_without_num_predict(captured):
     _client().generate("hi")
     assert "max_tokens" not in captured["body"]
+
+
+def test_generate_passes_temperature_and_seed(captured):
+    _client().generate("hi", options={"temperature": 0.2, "seed": 7})
+    assert captured["body"]["temperature"] == 0.2
+    assert captured["body"]["seed"] == 7

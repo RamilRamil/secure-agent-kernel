@@ -64,11 +64,29 @@ ASR = successful_attacks / total_attacks
 | `test_hostile_pack` | пак не может понизить guardrail (H1/H2/H3 — см. [capability-pack-interface.ru.md](capability-pack-interface.ru.md)) |
 | `test_report_not_instruction` | текст отчёта/находки, написанный моделью, возвращается как DATA, никогда как инструкция |
 | `test_sanitize_base64_scan` | скан encoding-инъекций в `guardrails/sanitize` (base64/homoglyph/zero-width/morse/overlong флагаются в заголовок `[DATA]`) |
-| `test_chat_mi_scenarios` | MI-векторы, прогнанные через полный чат-ход |
+| `test_chat_mi_scenarios` | инварианты chat-поверхности (не ASR-набор MI-001..005): вывод инструмента возвращается как инертный `[DATA]`; chat не пишет привилегированный `status_change`; per-turn tool budget ограничивает runaway-loop; неизвестный `next_action` отвергается как `[DATA]`; pack `write_execute` паузится на OOB confirmation как на batch-пути (открытая таксономия действий на chat — **spec-001 SC-009**) |
 | `test_kernel_pack_boundary` (B1..B5) | ядро остаётся task-agnostic там, где важно (импорты, config-поля, routing-слоты, произвольная карта ролей, дерево тестов) |
+| `test_tool_registry_integrity` | SC-001/002/003: `verify_all_hashes` / `ToolTampered` при порче description; unknown action id fail-closed |
+| PE / MI-007 unit | status-gate residue, `_persist_finding` → `external_llm_output`, non-human `supersedes` reject |
 
 Всё доказано против `tests/fixtures/pack/FIXTURE_PACK` — **только-ядерного** пака, — так что
 гарантия держится *без задачного кода*, что и есть вся заявка.
+
+## Дополняющая ось: live field ASR
+
+Отдельный opt-in suite: `tests/security/field_mi_asr/` (нужны `FIELD_ASR=1` + `OPENROUTER_API_KEY`).
+Не заменяет Secure-ось. Контракт осей, success и baseline knob — в
+[field README](../tests/security/field_mi_asr/README.md).
+
+| Threat | Deterministic | Field | Не покрыто |
+|--------|---------------|-------|------------|
+| Persist MI | `test_mi_resistance` | MI-002p/003p/006 | AUDIT_PACK exfil tool |
+| Status gate | episodic / MI-002/003 | baseline `gate_off` | — |
+| Indirect IO | `test_chat_mi_scenarios` | II-001/002 | — |
+| Tool misuse / OOB | action validation / hostile pack | TM/EA | human OOB social eng |
+| Tool hash SC | `test_tool_registry_integrity` | — | — |
+
+MI-001/004 в field — **capability inertness** (нет exfil tool), не behavioral exfil ASR.
 
 ## Как запустить
 

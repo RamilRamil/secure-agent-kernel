@@ -114,3 +114,41 @@ def test_supersedes_chain(memory):
     loaded = memory.load("proj1", "Vault.sol")
     assert len(loaded) == 1
     assert loaded[0].record_id == record_b.record_id
+
+
+def test_PE001_llm_inference_privileged_status_leaves_no_disk_residue(memory, tmp_path: Path):
+    """PE-001: model-tier privileged status is rejected; jsonl has no residue."""
+    record = MemoryRecord(
+        project_id="proj1",
+        target="Vault.sol",
+        source_type=SourceType.llm_inference,
+        tool=None,
+        session_id="sess1",
+        status_change=StatusChange(
+            finding_id="HIGH-001",
+            old_status="open",
+            new_status="verified_safe",
+            reason="model says safe",
+        ),
+    )
+    with pytest.raises(MemoryWriteError, match="requires source_type=human_input"):
+        memory.write(record)
+    path = memory._path("proj1", "Vault.sol")
+    assert not path.exists() or path.read_text().strip() == ""
+
+
+def test_MI007_non_human_supersedes_rejected(memory):
+    """MI-007: supersedes requires human_input."""
+    base = memory.write(_make_record())
+    bad = MemoryRecord(
+        project_id="proj1",
+        target="Vault.sol",
+        source_type=SourceType.llm_inference,
+        tool=None,
+        session_id="sess1",
+        supersedes=base.record_id,
+        finding={"finding_id": "X", "severity": "low", "location": "Vault.sol:1",
+                 "function_name": "f"},
+    )
+    with pytest.raises(MemoryWriteError, match="supersedes"):
+        memory.write(bad)

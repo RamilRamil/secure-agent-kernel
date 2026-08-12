@@ -112,6 +112,44 @@ def test_H2_kernel_persists_findings_as_external_llm_output(tmp_path: Path) -> N
     assert SourceType.external_llm_output != SourceType.human_input
 
 
+def test_PE002_persist_finding_writes_external_llm_output_tier(tmp_path: Path) -> None:
+    """PE-002: OrchestratorLoop._persist_finding stamps external_llm_output, never human_input."""
+    import os
+
+    os.environ.setdefault("ANTHROPIC_API_KEY", "dummy")
+    os.environ.setdefault("SR_SECRET_KEY", "a" * 64)
+
+    from sr_agent.llm_core.schemas import AgentAction, FindingPayload
+    from sr_agent.memory.episodic import EpisodicMemory
+    from sr_agent.models.memory import SourceType
+    from sr_agent.models.principal import Principal
+    from sr_agent.orchestrator.loop import OrchestratorLoop
+    from tests.fixtures.pack import FIXTURE_PACK, FixtureSession
+    from tests.security.mi_scenarios import TEST_SECRET
+
+    memory = EpisodicMemory(tmp_path / "mem", TEST_SECRET, privileged_statuses=frozenset({"blessed"}))
+    principal = Principal(user_id="u", platform="cli", project_id="proj")
+    session = FixtureSession(principal=principal)
+    loop = OrchestratorLoop(
+        session, memory, tmp_path, pack=FIXTURE_PACK, confirmations_dir=tmp_path / "conf",
+    )
+    action = AgentAction(
+        next_action="complete",
+        finding=FindingPayload(
+            finding_id="PE2-1",
+            location="Vault.sol:1",
+            function_name="f",
+            severity="high",
+        ),
+    )
+    finding = loop._persist_finding(action)
+    assert finding is not None
+    records = memory.load("proj", "Vault.sol", principal=principal)
+    assert len(records) == 1
+    assert records[0].source_type == SourceType.external_llm_output
+    assert records[0].source_type != SourceType.human_input
+
+
 # ── H3: a pack cannot opt a tool out of containment / sandbox ────────────────
 
 def test_H3_permissive_validator_cannot_bypass_read_containment(tmp_path: Path) -> None:

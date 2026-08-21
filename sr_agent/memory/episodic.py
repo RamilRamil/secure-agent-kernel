@@ -114,7 +114,13 @@ class EpisodicMemory:
                 f"!= principal project_id={principal.project_id!r}"
             )
 
-        return self._load_file(self._path(project_id, target))
+        # Corrections are resolved over the whole project, then the view is
+        # narrowed back to the requested target. Resolving per file is what made
+        # a correction filed under a different target silently ineffective. The
+        # candidate set never leaves memory/<project_id>/, so widening the scope
+        # to the project does not widen it past the isolation boundary.
+        surviving = self._apply_supersedes(self._all_records(project_id))
+        return [r for r in surviving if r.target == target]
 
     def load_for_principal(self, principal: "Principal") -> list[MemoryRecord]:
         """Load all records across all targets for a principal's project.
@@ -123,7 +129,16 @@ class EpisodicMemory:
         memory/<principal.project_id>/ are ever opened, so records belonging
         to another principal are never read — not even to verify their HMAC.
         """
-        project_dir = self._root / principal.project_id
+        return self._apply_supersedes(self._all_records(principal.project_id))
+
+    def _all_records(self, project_id: str) -> list[MemoryRecord]:
+        """Authenticated records of one project, every target, in file order.
+
+        This is the widest set a supersede may ever act on. It is bounded by the
+        project directory, so a correction can reach across targets but never
+        across projects.
+        """
+        project_dir = self._root / project_id
         if not project_dir.exists():
             return []
 
@@ -133,11 +148,18 @@ class EpisodicMemory:
         return records
 
     def _load_file(self, path: Path) -> list[MemoryRecord]:
-        """Read one JSONL file, verify each HMAC, apply supersedes chain."""
+        """Read one JSONL file and return its authenticated records, in order.
+
+        Supersede resolution deliberately does NOT happen here. A correction may
+        be filed under a different target than the record it overrides, and this
+        function sees one target's file — resolving here made such a correction
+        silently ineffective everywhere. Both read paths resolve over the whole
+        project instead.
+        """
         if not path.exists():
             return []
 
-        valid: dict[str, MemoryRecord] = {}  # record_id → record
+        valid: list[MemoryRecord] = []
 
         with path.open(encoding="utf-8") as f:
             for line_no, line in enumerate(f, 1):
@@ -161,9 +183,9 @@ class EpisodicMemory:
                     logger.debug("Dropping record %s: HMAC mismatch", record.record_id)
                     continue
 
-                valid[record.record_id] = record
+                valid.append(record)
 
-        return self._apply_supersedes(valid)
+        return valid
 
     def verify_integrity(self, project_id: str) -> IntegrityReport:
         """Scan all records for a project and count valid vs tampered.
@@ -208,14 +230,17 @@ class EpisodicMemory:
         return hmac_module.verify(record.fields_for_hmac(), record.hmac, self._secret_key)
 
     @staticmethod
-    def _apply_supersedes(records: dict[str, MemoryRecord]) -> list[MemoryRecord]:
-        """Remove records that have been superseded by a newer correction."""
-        superseded_ids: set[str] = set()
-        for record in records.values():
-            if record.supersedes:
-                superseded_ids.add(record.supersedes)
+    def _apply_supersedes(records: list[MemoryRecord]) -> list[MemoryRecord]:
+        """Remove records that a newer correction overrides.
 
-        return [r for r in records.values() if r.record_id not in superseded_ids]
+        Only records in ``records`` may cancel anything: the caller has already
+        verified every one of them. Reading `supersedes` off an unauthenticated
+        line would hand anyone with write access to the file a way to delete any
+        record by id, without the key — strictly worse than the resurrection it
+        would fix.
+        """
+        superseded_ids = {r.supersedes for r in records if r.supersedes}
+        return [r for r in records if r.record_id not in superseded_ids]
 
     def _enforce_status_rules(self, record: MemoryRecord) -> None:
         """Raise if privileged status / supersedes is set by an untrusted source.

@@ -74,3 +74,18 @@ design cites as its model, is structured the way it is for this reason.
   together from an old backup). That needs a monotonic anchor outside the memory directory.
 - Semantic deduplication of restated facts (FR-009).
 - Extending out-of-band confirmation to the memory class.
+
+## Decisions taken with the operator (2026-08-22)
+
+- **Records written before this change are not migrated.** They carry no chain and, because
+  the signed shape changed, none of them verifies — so they read as an empty store, which is
+  the behaviour `models/memory.py` already documented for any change to the signed shape.
+  What is new is that this must not also brick the store: a target file whose records all
+  fail verification and which has no head entry starts a fresh chain on the next write.
+  Pinned by `test_MI014_records_that_predate_the_chain_do_not_block_new_writes`.
+  A re-signing migration was considered and rejected for now — it would stamp a valid
+  signature onto records whose provenance can no longer be checked, so a store poisoned
+  before the migration would come out of it authenticated.
+- **The extra read cost of project-scoped resolution is accepted.** `load()` now walks the
+  project directory on every call, and `chat_session` calls it three times per history
+  reconstruction. Correctness first; revisit if it becomes measurable.

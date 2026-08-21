@@ -26,3 +26,13 @@ def verify(fields: dict[str, Any], expected_hmac: str, secret_key: bytes) -> boo
     """
     computed = sign(fields, secret_key)
     return hmac.compare_digest(computed, expected_hmac)
+
+
+def constant_time_equals(a: str, b: str) -> bool:
+    """Constant-time comparison of two hex digests.
+
+    Used for chain links (a record's `chain_prev` against the previous record's
+    signature) and for the signed chain head. These compare signature material,
+    so they go through compare_digest for the same reason verify() does.
+    """
+    return hmac.compare_digest(a, b)

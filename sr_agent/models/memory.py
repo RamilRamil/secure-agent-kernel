@@ -77,6 +77,18 @@ class MemoryRecord(BaseModel):
     # Append-only correction chain
     supersedes: str | None = None        # record_id of the record this overrides
 
+    # Composition integrity (see EpisodicMemory._read_authenticated).
+    # `seq` is this record's 0-based position in its target file; `chain_prev`
+    # is the hmac of the record written immediately before it (None for the
+    # first). Both are inside fields_for_hmac, so a record cannot be moved,
+    # renumbered, or re-parented without the orchestrator key. Per-record HMAC
+    # authenticates a record's CONTENT; these two authenticate the file's
+    # COMPOSITION, which is what makes a removed record detectable rather than
+    # indistinguishable from a record that never existed.
+    # Set by EpisodicMemory.write — never by a caller, never by the model.
+    seq: int | None = None
+    chain_prev: str | None = None
+
     # Integrity — orchestrator signs at write time, verifies at load time.
     # Must be persisted to disk, so NO exclude=True here (that would strip the
     # signature from model_dump_json() and every record would load as unsigned).
@@ -95,9 +107,12 @@ class MemoryRecord(BaseModel):
         return self.model_dump(exclude={"hmac"})
 
     def for_llm_context(self) -> dict:
-        """Serialize for inclusion in LLM context — hmac stripped.
+        """Serialize for inclusion in LLM context — integrity fields stripped.
 
         The signature is an orchestrator-only integrity artifact; the model
         must never see it (avoids both leakage and any tamper-oracle signal).
+        `chain_prev` is the *previous* record's signature and `seq` its position,
+        so they are stripped for the same reason — surfacing them would put
+        signature material back into model context through the side door.
         """
-        return self.model_dump(exclude={"hmac"})
+        return self.model_dump(exclude={"hmac", "seq", "chain_prev"})

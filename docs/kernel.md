@@ -245,3 +245,90 @@ first-class `memory_write` live-trace event, distinct from `tool`/`reasoning`/
 `hmac`/`seq`/`chain_prev`). The sink is bound once at `EpisodicMemory`
 construction; an absent sink, or one that raises, never blocks or reverses the
 write it would have reported.
+
+## Finding provenance (feature 005)
+
+Before this feature, `OrchestratorLoop` persisted a model-reported finding the
+moment the model reported it — in both `run` and `run_turn` — before the
+terminal check, before `validate_action`, and before `executor.execute`. A
+signed `Finding` therefore existed whether the turn went on to run a tool,
+propose an action the kernel rejected, name an action nobody recognized, or
+just end. Nothing on the record told those cases apart. This was never a
+trust-tier break — the record is `source_type=external_llm_output` and is
+never promoted — but it was an evidence gap: the store answered "did the
+model say this" and was silently read as answering "was this grounded in
+anything."
+
+The fix stamps every finding record with what the kernel actually observed
+about the action proposed in the *same* `AgentAction`, once that action has
+resolved:
+
+| Field | Values |
+|---|---|
+| `action_resolution` | `"resolved"` \| `"unresolved"` \| `"pending"` \| absent |
+| `action_operation_id` | `str` \| absent |
+| `action_dispatch_status` | a `DispatchStatus` value \| absent |
+| `resolves_record_id` | `str` \| absent |
+
+| Case | `action_resolution` | `action_operation_id` | `action_dispatch_status` | `resolves_record_id` |
+|---|---|---|---|---|
+| dispatch resolved | `resolved` | present | terminal | absent |
+| rejected · unknown id · terminal without a tool | `unresolved` | absent | absent | absent |
+| paused | `pending` | present | `pending` | absent |
+| resume resolution record | `resolved` | present | terminal | present |
+| written before kernel/005 | absent | absent | absent | absent |
+
+No other combination exists: `MemoryRecord._provenance_is_coherent` refuses a
+contradictory stamp at construction, because an append-only store cannot
+correct one after the fact.
+
+**There is deliberately no `grounded` field, under that or any other name,
+and there will not be one.** What the kernel observes is co-occurrence within
+one model turn — the outcome of the action proposed alongside the finding —
+not derivation. The model may attach a finding to an action that is
+unrelated to it. `DispatchStatus.ran` means the dispatch completed, not that
+an analyzer produced grounded output, and the kernel's own `DispatchStatus`
+docstring already names collapsing those two an error. A kernel flag
+asserting the stronger claim would manufacture an evidence tier nothing
+verified — and that would be worse than the gap it closes: today a consumer
+knows a `Finding` is a hypothesis, whereas a grounding flag invites it to
+stop knowing that. Grounding is the consumer's policy over the kernel's
+facts, not a kernel fact itself.
+
+**The pause pair.** A finding reported in a turn that pauses cannot wait for
+resume to be written — it has to survive a crash and stay visible in the
+snapshot while a human decides out of band. So the paused turn writes
+`pending` immediately, and resume writes a *second* record, `resolved`, with
+`resolves_record_id` naming the first. That second record is not
+`supersedes`: `supersedes` is refused on anything but
+`source_type=human_input` ("corrections to existing records require human
+authority"), and a finding stays `external_llm_output` — setting the human
+tier to get past that check would be exactly the promotion Constitution I
+forbids. Relaxing the rule instead would make the kernel a second authority
+able to delete records by id, since `supersedes` drops the superseded record
+from every load and from the snapshot. The paused record keeps its
+`record_id`, which remains the finding's stable address — a consumer that
+captured that id before the confirmation still addresses the same finding
+afterwards.
+
+**Integrity.** The four fields are excluded from `fields_for_hmac()` when
+unset, so a store written before this feature verifies exactly as it did
+before — adding signed fields unconditionally would have changed the signed
+shape of every record on disk and blanked the whole store. Once a field is
+set, it is signed like any other field: altering or stripping it after the
+fact breaks the record's signature. There is no downgrade path — signing
+happens at write time, not read time, so a record carrying provenance cannot
+be made to read as legacy-unknown by removing the fields.
+
+**`for_llm_context()` strips all four**, for the same reason it already
+strips `log_sequence`: a turn that could see its own bookkeeping could reason
+about it and then argue about it. The provenance fields are the sharper case
+— they name exactly the state that makes a finding proof-eligible downstream,
+so a model that could see which of its own earlier findings earned that
+stamp could optimize for producing it. The pack reads them off
+`SnapshotItem` instead, which is a projection built for the pack, never
+model context.
+
+**Absence means unknown, never "no action resolved."** A record written
+before this feature says nothing about its turn; reading its absent fields
+as `unresolved` would invent a claim the kernel never made.

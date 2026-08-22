@@ -318,3 +318,65 @@ def test_a_sink_that_writes_memory_does_not_recurse(tmp_path):
     assert calls["count"] == 1
     assert len(events) == 1
     assert events[0]["target"] == "Vault.sol"
+
+
+# ── Feature 005: the moved finding write still emits, and a pause emits twice ─
+
+
+def test_a_finding_write_still_emits_after_the_persist_moved(tmp_path) -> None:
+    """kernel/005 moved the finding persist to after the action resolves.
+
+    A moved call site is exactly how an event quietly stops firing, and nothing
+    downstream would report the loss — the trace is not the record of truth, so a
+    consumer is forbidden from treating a missing event as evidence. Hence a test
+    rather than an assumption.
+
+    `payload_kind` stays empty on findings, which is deliberate: `_snapshot_kind`
+    reads it first, and giving findings a kind would drop them out of the pack's
+    projection. Consumers are already required to tolerate an unrecognised kind,
+    so `None` costs them nothing.
+    """
+    import os
+    os.environ.setdefault("SR_SECRET_KEY", "00" * 32)
+    from sr_agent.llm_core.schemas import AgentAction, FindingPayload
+    from sr_agent.models.chat import ChatSession
+    from sr_agent.models.principal import Principal
+    from sr_agent.orchestrator.executor import KernelActionExecutor
+    from sr_agent.orchestrator.lease import WriterLease
+    from sr_agent.orchestrator.loop import OrchestratorLoop
+    from sr_agent.models.dispatch import DispatchResult, DispatchStatus
+    from tests.unit.test_finding_provenance_paths import _pack, _paused, _StubReasoning
+
+    events: list[dict] = []
+    session = ChatSession(
+        principal=Principal(user_id="u", platform="cli", project_id=PROJECT),
+        scope_root=str(tmp_path), include=["*"],
+    )
+    lease = WriterLease(tmp_path, SECRET)
+    lease.acquire(PROJECT, session.session_id)
+    memory = EpisodicMemory(tmp_path, SECRET, lease=lease, event_sink=events.append)
+    loop = OrchestratorLoop(
+        session, memory, tmp_path, pack=_pack(_paused),
+        reasoning_provider=_StubReasoning([
+            AgentAction(next_action="do_thing", tool_params={},
+                        finding=FindingPayload(finding_id="F-1", location="Vault.sol:42",
+                                               function_name="withdraw", severity="high")),
+        ]),
+        confirmations_dir=tmp_path / "conf",
+    )
+    loop._executor = KernelActionExecutor(
+        memory=memory, scope_root=tmp_path, pack_id="fixture",
+        pack_contract_version="1", confirmations_dir=tmp_path / "conf",
+        relay_dir=tmp_path / "relay",
+    )
+
+    loop.run_turn(user_message="look", system_prompt="p")
+    finding_events = [e for e in events if e["target"] == "Vault.sol"]
+    assert len(finding_events) == 1
+    assert finding_events[0]["payload_kind"] is None
+    assert finding_events[0]["source_type"] == "external_llm_output"
+
+    loop._resolve_paused_findings(DispatchResult(status=DispatchStatus.ran, body="done"))
+    finding_events = [e for e in events if e["target"] == "Vault.sol"]
+    assert len(finding_events) == 2, "the pause pair must emit twice, not once"
+    assert finding_events[0]["record_id"] != finding_events[1]["record_id"]

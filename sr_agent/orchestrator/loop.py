@@ -27,6 +27,39 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+
+@dataclass(frozen=True)
+class FindingProvenance:
+    """What happened to the action the model proposed alongside a finding (005).
+
+    This is co-occurrence within ONE `AgentAction`, not derivation: the model may
+    attach a finding to an action it ran for unrelated reasons. There is no
+    "grounded" value here and there must not be one -- the kernel reports what it
+    observed and leaves what counts as grounding to the consumer, because a
+    kernel flag naming the stronger claim would manufacture an evidence tier
+    nothing verified. See specs/005-finding-provenance/contracts/.
+
+    It exists as a required argument to `_persist_finding` rather than as
+    something the method works out for itself. That is the point: an early call
+    site -- the bug this feature fixes -- has no outcome to pass, so reintroducing
+    it means inventing a value, which is a visible act rather than a moved line.
+    """
+
+    resolution: str                                  # resolved | unresolved | pending
+    operation_id: str | None = None
+    dispatch_status: "DispatchStatus | None" = None
+
+    @classmethod
+    def not_dispatched(cls) -> "FindingProvenance":
+        """Rejected, unknown action id, or a turn that ended without a tool."""
+        return cls("unresolved")
+
+    @classmethod
+    def of(cls, result, operation_id: str) -> "FindingProvenance":
+        if result.status is DispatchStatus.pending:
+            return cls("pending", operation_id, DispatchStatus.pending)
+        return cls("resolved", operation_id, result.status)
+
 MAX_ITERATIONS = 50
 
 
@@ -232,14 +265,14 @@ class OrchestratorLoop:
                 agent_action.reasoning_summary[:80],
             )
 
-            # ── Persist finding if LLM reported one ──────────────────────
-            if agent_action.finding:
-                finding = self._persist_finding(agent_action)
-                if finding:
-                    self._findings.append(finding)
+            # A finding is persisted only once the action proposed in THIS
+            # `AgentAction` has an outcome (005 FR-001), so every exit below
+            # stamps its own. `_persist_finding` requires the stamp, which is
+            # what stops the call drifting back above this point.
 
             # ── Terminal actions ─────────────────────────────────────────
             if agent_action.next_action == "escalate":
+                self._record_finding(agent_action, FindingProvenance.not_dispatched())
                 return RunResult(
                     session_id=self._session.session_id,
                     findings=self._findings,
@@ -249,6 +282,7 @@ class OrchestratorLoop:
                 )
 
             if agent_action.next_action == "complete":
+                self._record_finding(agent_action, FindingProvenance.not_dispatched())
                 if self._checkpoint_fn is not None:
                     self._checkpoint_fn(self._session, self._memory)
                 return RunResult(
@@ -275,12 +309,18 @@ class OrchestratorLoop:
                     tool="orchestrator",
                     path="",
                 )
+                self._record_finding(agent_action, FindingProvenance.not_dispatched())
                 continue
 
+            # Derived BEFORE dispatch and from the same inputs the executor uses,
+            # so the id on the record is the id of the transition that actually
+            # ran rather than a second one invented afterwards.
+            _, operation_id, _ = self._executor.derive_ids(self._session, action)
             dispatched = self._executor.execute(
                 self._pack, self._session, action,
                 system_prompt_id=prompt_id, system_prompt_hash=prompt_hash,
             )
+            self._record_finding(agent_action, FindingProvenance.of(dispatched, operation_id))
             if dispatched.status is DispatchStatus.pending:
                 return RunResult(
                     session_id=self._session.session_id,
@@ -370,16 +410,14 @@ class OrchestratorLoop:
                 reasoning_summary=agent_action.reasoning_summary,
             )
 
-            if agent_action.finding:
-                finding = self._persist_finding(agent_action)
-                if finding:
-                    turn_findings.append(finding)
-                    self._findings.append(finding)
-
-            # Terminal: the model answered directly (no tool). "complete" carries
-            # the answer in reasoning_summary; "escalate" ends the turn too.
+            # Same rule as `run`: the stamp comes from the outcome, so the
+            # persist happens at each exit below and never here (005 FR-001,
+            # FR-006 — the two paths must not diverge).
             na = agent_action.next_action
             if na in LOOP_TERMINALS:
+                self._record_finding(
+                    agent_action, FindingProvenance.not_dispatched(), turn_findings
+                )
                 return TurnResult(
                     status="completed", answer=agent_action.reasoning_summary,
                     routing=routing, tool_calls=tool_calls, findings=turn_findings,
@@ -394,6 +432,9 @@ class OrchestratorLoop:
                     f"ACTION REJECTED: unknown next_action {na!r}",
                     tool="orchestrator", path="",
                 )
+                self._record_finding(
+                    agent_action, FindingProvenance.not_dispatched(), turn_findings
+                )
                 tool_calls += 1
                 continue
 
@@ -404,13 +445,20 @@ class OrchestratorLoop:
                     f"ACTION REJECTED: {result.rejection_reason}",
                     tool="orchestrator", path="",
                 )
+                self._record_finding(
+                    agent_action, FindingProvenance.not_dispatched(), turn_findings
+                )
                 tool_calls += 1
                 continue
 
+            _, operation_id, _ = self._executor.derive_ids(self._session, action)
             dispatched = self._executor.execute(
                 self._pack, self._session, action,
                 user_message=user_message, tool_calls_used=tool_calls,
                 system_prompt_id=prompt_id, system_prompt_hash=prompt_hash,
+            )
+            self._record_finding(
+                agent_action, FindingProvenance.of(dispatched, operation_id), turn_findings
             )
             if dispatched.status is DispatchStatus.pending:
                 pending_id = dispatched.pending.correlation_id if dispatched.pending else None
@@ -456,7 +504,68 @@ class OrchestratorLoop:
         result = self._executor.resume(self._pack, self._session)
         if result.status is DispatchStatus.pending:
             return TurnResult(status=_paused_status(result), answer=result.body)
+        self._resolve_paused_findings(result)
         return TurnResult(status="completed", answer=result.body)
+
+    def _resolve_paused_findings(self, result) -> None:
+        """Report the outcome of a resumed action onto findings it paused with.
+
+        A finding reported in a turn that paused is written as `pending` — it has
+        to survive a crash and stay visible while a human decides out of band. Once
+        the action resolves, a record still claiming `pending` is false evidence of
+        a different kind, so the outcome is filed as a SECOND record naming the
+        first through `resolves_record_id`.
+
+        Deliberately not `supersedes`. That field requires `source_type=human_input`
+        ("corrections to existing records require human authority"), and a finding
+        is `external_llm_output`; setting the human tier to get past the check is
+        exactly the promotion Constitution I forbids. Relaxing the rule instead
+        would make the kernel a second authority able to delete records by id --
+        `_apply_supersedes` drops a superseded record from every load. It also
+        happens to be worse for the consumer: the paused record keeps its
+        `record_id`, so an id captured before the confirmation still addresses the
+        same finding afterwards.
+
+        The pending records are found through the normal verified read path, so a
+        record whose signature does not verify is simply not there to match and
+        cannot attract a resolution.
+        """
+        checkpoint = self._executor.latest_checkpoint(self._session)
+        snapshot = ((checkpoint.payload or {}).get("action_snapshot") or {}) if checkpoint else {}
+        operation_id = snapshot.get("operation_id") or (
+            (checkpoint.payload or {}).get("pending", {}) or {}
+        ).get("correlation_id") if checkpoint else None
+        if not operation_id:
+            return
+
+        records = self._memory.load_for_principal(self._session.principal)
+        pending = [
+            r for r in records
+            if r.finding
+            and r.session_id == self._session.session_id
+            and r.action_resolution == "pending"
+            and r.action_operation_id == operation_id
+        ]
+        # Already reported on: a second resume must not grow the pair into a triple.
+        resolved = {r.resolves_record_id for r in records if r.resolves_record_id}
+        for record in pending:
+            if record.record_id in resolved:
+                continue
+            self._memory.write(
+                MemoryRecord(
+                    project_id=record.project_id,
+                    target=record.target,
+                    source_type=SourceType.external_llm_output,
+                    tool=None,
+                    session_id=record.session_id,
+                    finding=record.finding,
+                    action_resolution="resolved",
+                    action_operation_id=operation_id,
+                    action_dispatch_status=result.status,
+                    resolves_record_id=record.record_id,
+                ),
+                principal=self._session.principal,
+            )
 
     def execute_confirmed(self, action: Action) -> tuple[str, PoCStatusEvent | None]:
         """Execute a write_execute action AFTER out-of-band approval (US2/R9).
@@ -467,12 +576,45 @@ class OrchestratorLoop:
         """
         return self._pack.execute_confirmed(action, self._ctx)
 
-    def _persist_finding(self, agent_action: AgentAction):
-        """Persist a finding the model reported.
+    def _record_finding(
+        self,
+        agent_action: AgentAction,
+        provenance: FindingProvenance,
+        turn_findings: list | None = None,
+    ):
+        """The single guarded call site both loop paths use.
+
+        One helper rather than an `if agent_action.finding` at each of the eight
+        exits: the guard, the bookkeeping and the stamp then cannot be right in
+        one path and wrong in the other, which is the divergence FR-006 is about.
+        """
+        if not agent_action.finding:
+            return None
+        finding = self._persist_finding(agent_action, provenance)
+        if finding:
+            if turn_findings is not None:
+                turn_findings.append(finding)
+            self._findings.append(finding)
+        return finding
+
+    def _persist_finding(
+        self,
+        agent_action: AgentAction,
+        provenance: FindingProvenance,
+        *,
+        resolves_record_id: str | None = None,
+    ):
+        """Persist a finding the model reported, stamped with its turn's outcome.
 
         The pack builds + validates the domain Finding; the KERNEL owns the write
         and sets source_type=external_llm_output (FR-006) — a pack cannot set the
         tier or reach memory. Never promoted to human_input (Constitution I).
+
+        `provenance` is REQUIRED and must be computed from the action's actual
+        outcome (005 FR-001). Calling this before the action resolves is the bug
+        this feature fixed: a `Finding` in the store then said nothing about
+        whether anything ran, and a consumer could not tell a hypothesis from a
+        claim that followed real work.
         """
         finding = self._pack.persist_finding(agent_action.finding, self._ctx)
         if finding is None:
@@ -486,6 +628,12 @@ class OrchestratorLoop:
             tool=None,
             session_id=self._session.session_id,
             finding=finding.model_dump(),
+            # Envelope, never inside `finding` — the body is model-authored text,
+            # and provenance about that text may not sit inside it (FR-017).
+            action_resolution=provenance.resolution,
+            action_operation_id=provenance.operation_id,
+            action_dispatch_status=provenance.dispatch_status,
+            resolves_record_id=resolves_record_id,
         )
         self._memory.write(record, principal=self._session.principal)
         # session.finding_ids is pack-session bookkeeping — append if the session

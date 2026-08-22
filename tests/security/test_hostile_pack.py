@@ -152,12 +152,21 @@ def test_PE002_persist_finding_writes_external_llm_output_tier(tmp_path: Path) -
             severity="high",
         ),
     )
-    finding = loop._persist_finding(action)
+    # Feature 005 made the provenance stamp a REQUIRED argument, so this call
+    # has to name an outcome. `complete` used no tool, hence `not_dispatched`.
+    # The subject of this test is unchanged: whatever the turn did, the kernel
+    # writes the tier and the pack cannot reach it.
+    from sr_agent.orchestrator.loop import FindingProvenance
+
+    finding = loop._persist_finding(action, FindingProvenance.not_dispatched())
     assert finding is not None
     records = memory.load("proj", "Vault.sol", principal=principal)
     assert len(records) == 1
     assert records[0].source_type == SourceType.external_llm_output
     assert records[0].source_type != SourceType.human_input
+    # ...and the stamp is on the envelope, not smuggled into the pack-built body.
+    assert records[0].action_resolution == "unresolved"
+    assert "action_resolution" not in records[0].finding
 
 
 # ── H3: a pack cannot opt a tool out of containment / sandbox ────────────────

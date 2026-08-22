@@ -854,6 +854,14 @@ class EpisodicMemory:
                 source_type=r.source_type.value,
                 timestamp=r.timestamp.isoformat(),
                 operation_id=(r.payload or {}).get("operation_id"),
+                # Finding provenance (feature 005): off the record ENVELOPE,
+                # never out of `payload`/`finding` -- these are the kernel's
+                # own stamp of what the turn's action did, not a claim the
+                # pack authored. See contracts/finding-provenance.md.
+                action_resolution=r.action_resolution,
+                action_operation_id=r.action_operation_id,
+                action_dispatch_status=r.action_dispatch_status,
+                resolves_record_id=r.resolves_record_id,
                 body=self._snapshot_body(r),
             )
             for r in selected

@@ -144,6 +144,17 @@ class SnapshotItem(BaseModel):
     source_type: str
     timestamp: str
     operation_id: str | None = None
+    # Finding provenance (feature 005): the outcome of the action proposed in
+    # the SAME model turn that carried the finding, read off the record
+    # envelope -- never off `body`. `action_operation_id` answers "which
+    # operation did the turn that produced this finding dispatch?", a
+    # different question from `operation_id` above ("which operation is this
+    # record the commit of?"); on a finding record `operation_id` is None
+    # while `action_operation_id` may be set. See contracts/finding-provenance.md.
+    action_resolution: str | None = None
+    action_operation_id: str | None = None
+    action_dispatch_status: DispatchStatus | None = None
+    resolves_record_id: str | None = None
     body: dict
 
 

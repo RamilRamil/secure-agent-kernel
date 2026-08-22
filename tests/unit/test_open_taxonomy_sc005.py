@@ -45,12 +45,24 @@ def test_sc005c_kernel_generic_ids_resolve_though_pack_declares_none(scope_root)
     assert set(FIXTURE_PACK.actions) == {DO_THING}
 
     # write_memory (memory machinery) resolves from KERNEL_GENERIC_ACTIONS.
-    mem = Action(action_type="write_memory", params={})
+    # Feature 002 gave the id a real param validator, so the payload here must be
+    # a valid one — the subject of this test is RESOLUTION from the kernel set,
+    # not param policy, and it must keep proving exactly that.
+    mem = Action(action_type="write_memory", params={"note": "a note"})
     mem_result = validate_action(mem, scope_root, FIXTURE_PACK)
     assert mem_result.status == ValidationStatus.approved
     assert mem.action_class == ActionClass.memory
     # memory is not write_execute → no OOB gate flagged.
     assert mem.human_confirmation is None
+
+    # Sibling assertion so the change above reads as a policy addition rather
+    # than a quiet edit: empty params now reject, and reject *after* resolving
+    # (the id is known; it is the params that fail). Feature 002, FR-004.
+    empty = Action(action_type="write_memory", params={})
+    empty_result = validate_action(empty, scope_root, FIXTURE_PACK)
+    assert empty_result.status == ValidationStatus.rejected
+    assert "note" in (empty_result.rejection_reason or "")
+    assert empty.action_class == ActionClass.memory
 
     # read_file (generic scope-bounded read, D6) resolves and enforces containment.
     target = scope_root / "Vault.sol"

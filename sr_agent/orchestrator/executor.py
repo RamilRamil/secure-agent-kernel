@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from sr_agent.memory.canonical import canonical_digest, derive_operation_id, derive_transition_key
+from sr_agent.memory.episodic import MemoryChainError, MemoryWriteError, PrincipalMismatch
 from sr_agent.models.action import Action, ValidationStatus
 from sr_agent.models.dispatch import (
     ActionSnapshot,
@@ -22,7 +23,10 @@ from sr_agent.models.dispatch import (
     PendingWait,
 )
 from sr_agent.models.memory import MemoryRecord, SourceType
-from sr_agent.orchestrator.action import validate_action
+from sr_agent.orchestrator.action import (
+    commit_target, validate_action, validate_commit_target,
+    validate_write_memory, write_memory_content,
+)
 from sr_agent.orchestrator.confirmation import request_confirmation_if_absent
 from sr_agent.orchestrator.context import wrap_data
 from sr_agent.orchestrator.pack import PackContext
@@ -132,6 +136,29 @@ class KernelActionExecutor:
                 body=validated.rejection_reason or "rejected",
             )
 
+        # `write_memory` branches HERE, before `derive_ids`, and never rejoins
+        # the dispatch path below (002, D8/D13). A note is not a transition
+        # against the outside world — there is no external effect to make
+        # idempotent, so the exactly-once machinery (`derive_ids`,
+        # `find_committed_bundle`, `commit_if_absent`) has nothing to protect.
+        # Routing it through `commit_if_absent` anyway would advance
+        # `session_revision`, which `003` documents other durable records must
+        # not move (see `EpisodicMemory.session_revision`'s docstring) — an
+        # unrelated note would then invalidate an in-flight dispatch's stale-
+        # commit check. The pack is not invoked at all, and the record is built
+        # from a fixed shape, never from `action.params` directly.
+        if action.action_type == "write_memory":
+            return self._execute_write_memory(session, action)
+
+        # The commit target is bounded HERE, before `pack.dispatch`, and not at
+        # the `commit_if_absent` call below where the value is used. By then the
+        # pack has acted on the world; a refusal at that point leaves the effect
+        # done and unrecorded, and an unrecorded effect re-dispatches on retry
+        # (see `validate_commit_target`).
+        reason = validate_commit_target(action)
+        if reason:
+            return DispatchResult(status=DispatchStatus.error, body=reason)
+
         transition_key, operation_id, revision = self.derive_ids(session, action)
         project_id = session.principal.project_id
 
@@ -167,7 +194,7 @@ class KernelActionExecutor:
 
         self._memory.commit_if_absent(
             project_id=project_id,
-            target=str(action.params.get("target") or action.action_type),
+            target=commit_target(action),
             session_id=session.session_id,
             tool=action.action_type,
             operation_id=operation_id,
@@ -176,6 +203,58 @@ class KernelActionExecutor:
             payloads=result.payloads,
         )
         return result
+
+    # ── write_memory (feature 002) ───────────────────────────────────────────
+    # Kernel-owned, pack-invisible. Every field below is kernel-set from the
+    # session/action shape (data-model.md, Entity 1) — none is read out of
+    # `action.params` here except through `write_memory_content`, which returns
+    # only the two params this path honours (note, target), already bounds-
+    # checked by `validate_write_memory`.
+
+    def _execute_write_memory(self, session, action: Action) -> DispatchResult:
+        # Re-check with the KERNEL's rule, not with whatever validator ran in
+        # `validate_action`. `validate_action` resolves an id against
+        # `KERNEL_GENERIC_ACTIONS` updated by `pack.actions`, so a pack that
+        # declares `write_memory` shadows the kernel's `ActionSpec` and can hand
+        # the id a permissive validator. Without this line that pack would both
+        # switch off the param policy (Principle III: a pack MUST NOT weaken a
+        # kernel guarantee) and reach `write_memory_content` with no `note`,
+        # raising a KeyError straight out of a model turn — a denial of service
+        # the model could trigger on demand, which is exactly what D12.3 forbids.
+        # This is D12's structural half: the guarantee must not depend on which
+        # validator happened to win a resolution.
+        reason = validate_write_memory(action, self._scope_root)
+        if reason:
+            return DispatchResult(status=DispatchStatus.error, body=reason)
+
+        note, target = write_memory_content(action)
+        record = MemoryRecord(
+            project_id=session.principal.project_id,   # never from params — project isolation
+            session_id=session.session_id,              # never from params
+            source_type=SourceType.llm_inference,        # never from params (FR-002)
+            tool=None,                                    # `tool` names a tool_output; a note is not one
+            target=target,
+            payload_kind="model_note",
+            payload={"note": note},
+        )
+        try:
+            written = self._memory.write(record, principal=session.principal)
+        except (MemoryWriteError, MemoryChainError, PrincipalMismatch) as exc:
+            # A model must not be able to kill a turn by proposing a write the
+            # kernel then refuses — that would turn a denied action into a
+            # denial of service the model can trigger at will (D12.3). The
+            # refusal re-enters context DATA-wrapped by the loop's normal
+            # rejected-tool-output handling, same as any other error result.
+            # Deliberately NOT a broad `except Exception`: an exception of any
+            # other type here is a kernel bug and must surface, not be papered
+            # over as a routine refusal.
+            return DispatchResult(status=DispatchStatus.error, body=str(exc))
+        # The id, not the note echoed back: re-stating the model's own text to
+        # the model adds nothing and would put a second copy of it in context.
+        return DispatchResult(
+            status=DispatchStatus.ran,
+            body=f"note saved to episodic memory under {target!r} as {written.record_id}",
+        )
 
     # ── Pause ───────────────────────────────────────────────────────────────
 
@@ -317,6 +396,14 @@ class KernelActionExecutor:
         if pending.get("kind") == PendingKind.human_confirmation.value and snap_data is None:
             raise ResumeError("A correlation id alone does not authorize execution.")
 
+        # Re-checked on resume too. `execute` rejects these up front now, so a
+        # bad target can only arrive here from a checkpoint written before that
+        # check existed — and a checkpoint being signed says the kernel wrote the
+        # value down, not that the value is usable.
+        reason = validate_commit_target(action)
+        if reason:
+            return DispatchResult(status=DispatchStatus.error, body=reason)
+
         ctx = self._context(snapshot.operation_id, snapshot.transition_key, session)
         result = self._as_result(pack.dispatch(action, ctx))
         if result.status is DispatchStatus.pending:
@@ -329,7 +416,7 @@ class KernelActionExecutor:
         revision = self._memory.session_revision(session.principal.project_id, session.session_id)
         self._memory.commit_if_absent(
             project_id=session.principal.project_id,
-            target=str(action.params.get("target") or action.action_type),
+            target=commit_target(action),
             session_id=session.session_id,
             tool=action.action_type,
             operation_id=snapshot.operation_id,

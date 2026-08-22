@@ -51,7 +51,12 @@ CapabilityPack(
   the generic, non-domain ids it provides to every pack — the control/memory machinery
   (`write_memory`, `request_human_confirmation`) **and** the scope-bounded reads
   (`read_file`, `search_code`, decision D6). `validate_action` resolves an id against
-  `KERNEL_GENERIC_ACTIONS ∪ pack.actions` and **fails closed** on a miss.
+  `KERNEL_GENERIC_ACTIONS ∪ pack.actions` and **fails closed** on a miss. `write_memory`
+  is one of these generic ids, but it is **not dispatched to the pack at all**:
+  `KernelActionExecutor` intercepts it before `pack.dispatch` and builds the record
+  itself, from a fixed shape (`payload={"note": …}`, `payload_kind="model_note"`,
+  `source_type=llm_inference`, kernel-set). A pack declares nothing for it and must
+  not implement a stub — there is no `dispatch` branch for a pack to own (feature 002).
 - **`ActionSpec`** = `(action_class, is_reversible, validate_params)`. `action_class` is
   the pack's **only** confirmation lever — the kernel derives "`write_execute ⇒ confirm`"
   itself. A missing or permissive `validate_params` **fails closed**: the kernel whitelist,
@@ -77,10 +82,22 @@ no subclassing needed:
   `ActionSpec` or `CapabilityPack`.
 - **H2 — cannot forge a `human_input` tier.** `PackContext` has no `memory` field (the test
   pins its field set exactly), so a pack cannot write memory at all; the kernel persists
-  model-reported findings as `external_llm_output`, never promoted to `human_input`.
+  model-reported findings as `external_llm_output`, never promoted to `human_input`. The
+  same holds for `write_memory`: it never reaches the pack, and the kernel always writes
+  the note as `llm_inference` — model params cannot set `source_type` or any other
+  identity field (rejected, not stripped).
 - **H3 — cannot opt out of containment.** Even with a permissive `validate_params`, the
   kernel-owned `read_file` refuses paths outside `scope_root`, and `DockerSandbox.run`
   defaults to `--network none` — a pack only gets the sandbox *handle*, not its policy.
+- **H3b — cannot choose where its own commit is filed, without bounds.** The
+  `target` param a pack action carries becomes a memory filename, so the kernel
+  bounds it (`validate_commit_target`, 200 bytes, no control characters, string
+  only) **before** `pack.dispatch` runs. An out-of-bounds target is a clean
+  `DispatchStatus.error` and the pack is never entered — the refusal cannot come
+  after the effect, because an effect the kernel could not commit re-dispatches
+  on retry. `target` is a partition label, not a path: separators are rendered
+  inert and containment comes from the principal's `project_id`, so a
+  traversal-shaped target is accepted and contained rather than rejected.
 - **H4 — under-declaration cannot bypass a status gate.** A pack declaring an *empty* or
   *reduced* `privileged_statuses` gates exactly its declared set (empty ⇒ "nothing
   privileged", not "gate disabled") — it cannot bypass a kernel-enforced status, because

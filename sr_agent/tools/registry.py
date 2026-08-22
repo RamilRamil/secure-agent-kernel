@@ -42,8 +42,12 @@ _D_SEARCH_CODE = (
 )
 
 _D_WRITE_MEMORY = (
-    "Write a structured finding or status update to episodic memory. "
-    "Content must conform to the MemoryRecord schema. HMAC is added by the orchestrator."
+    "Save a short free-text note to episodic memory for later reference. "
+    "Params: 'note' (required, the text) and optional 'target' naming what the "
+    "note is about. Nothing else is accepted: provenance and identity fields are "
+    "set by the kernel, and supplying one rejects the call rather than being "
+    "ignored. Do not use this to report a finding — findings go through the "
+    "finding mechanism, not through memory."
 )
 
 _D_REQUEST_HUMAN_CONFIRMATION = (

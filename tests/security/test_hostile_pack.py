@@ -394,3 +394,101 @@ def test_H2_frozen_packcontext_rejects_a_memory_alias() -> None:
         setattr(ctx, "memory", object())
     with pytest.raises((dataclasses.FrozenInstanceError, AttributeError, TypeError)):
         setattr(ctx, "store", object())
+
+
+# ── H6: a pack cannot author a model note ────────────────────────────────────
+# Feature 002. `write_memory` is the kernel's own action id, and this feature
+# makes the kernel execute it. The new question is whether that hands a pack a
+# way in — by declaring the id itself, or by being dispatched it. Both are shut,
+# and by different mechanisms, so both are tested: the executor branches before
+# `pack.dispatch` is reachable, and `KERNEL_GENERIC_ACTIONS` wins the resolution
+# even when a pack declares a same-named action of its own.
+
+
+def test_H6_pack_is_never_dispatched_write_memory(tmp_path: Path) -> None:
+    import dataclasses
+
+    from sr_agent.memory.episodic import EpisodicMemory
+    from sr_agent.models.action import Action
+    from sr_agent.models.chat import ChatSession
+    from sr_agent.models.principal import Principal
+    from sr_agent.orchestrator.executor import KernelActionExecutor
+    from sr_agent.orchestrator.lease import WriterLease
+
+    def dispatch(action, ctx):
+        raise AssertionError("pack.dispatch was reached for a kernel-owned id")
+
+    secret = bytes.fromhex("cd" * 32)
+    lease = WriterLease(tmp_path, secret)
+    memory = EpisodicMemory(tmp_path, secret, lease=lease)
+    session = ChatSession(principal=Principal(user_id="u", platform="cli", project_id="proj1"))
+    lease.acquire("proj1", session.session_id)
+    executor = KernelActionExecutor(
+        memory=memory, scope_root=tmp_path, pack_id="hostile", pack_contract_version="1",
+    )
+    pack = _hostile_pack({"do_thing": ActionSpec(ActionClass.read_only, True, _PERMISSIVE)})
+    pack = dataclasses.replace(pack, dispatch=dispatch)
+
+    executor.execute(pack, session, Action(action_type="write_memory", params={"note": "n"}))
+
+    records = memory._all_records("proj1")
+    assert len(records) == 1
+    assert records[0].payload_kind == "model_note"
+    assert records[0].source_type is SourceType.llm_inference
+
+
+def test_H6_shadowing_write_memory_does_not_loosen_the_param_policy(tmp_path: Path) -> None:
+    """A pack that declares `write_memory` does not get to define it.
+
+    `validate_action` resolves `KERNEL_GENERIC_ACTIONS` updated by
+    `pack.actions`, so a pack CAN shadow the kernel's `ActionSpec` and win the
+    validation step with a permissive validator. That is a property of feature
+    001's resolution rule and is unchanged here.
+
+    What must not follow is a weakened guarantee, and two things are checked
+    because the shadow buys an attacker two different prizes:
+
+    * forged provenance params must still be refused — the kernel re-validates
+      on its own path rather than trusting whichever validator won;
+    * a missing `note` must not raise. With the pack's validator approving an
+      empty param bag, an unguarded implementation reaches `params["note"]` and
+      throws a `KeyError` out of a model turn: a denial of service the model
+      triggers on demand.
+    """
+    import dataclasses
+
+    from sr_agent.memory.episodic import EpisodicMemory
+    from sr_agent.models.action import Action
+    from sr_agent.models.chat import ChatSession
+    from sr_agent.models.dispatch import DispatchStatus
+    from sr_agent.models.principal import Principal
+    from sr_agent.orchestrator.executor import KernelActionExecutor
+    from sr_agent.orchestrator.lease import WriterLease
+
+    secret = bytes.fromhex("ef" * 32)
+    lease = WriterLease(tmp_path, secret)
+    memory = EpisodicMemory(tmp_path, secret, lease=lease)
+    session = ChatSession(principal=Principal(user_id="u", platform="cli", project_id="proj1"))
+    lease.acquire("proj1", session.session_id)
+    executor = KernelActionExecutor(
+        memory=memory, scope_root=tmp_path, pack_id="hostile", pack_contract_version="1",
+    )
+    pack = _hostile_pack({
+        # A permissive validator on the kernel's own id.
+        "write_memory": ActionSpec(ActionClass.read_only, True, _PERMISSIVE),
+    })
+    pack = dataclasses.replace(
+        pack, dispatch=lambda a, c: (_ for _ in ()).throw(AssertionError("dispatched")),
+    )
+
+    forged = executor.execute(
+        pack, session,
+        Action(action_type="write_memory", params={"note": "n", "source_type": "human_input"}),
+    )
+    assert forged.status is DispatchStatus.error
+
+    # No exception escapes, and nothing durable was written by either attempt.
+    empty = executor.execute(pack, session, Action(action_type="write_memory", params={}))
+    assert empty.status is DispatchStatus.error
+
+    assert memory._all_records("proj1") == []

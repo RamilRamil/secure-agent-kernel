@@ -155,7 +155,10 @@ left behind:
   to every pack — the control/memory machinery (`write_memory`,
   `request_human_confirmation`) and the scope-bounded reads (`read_file`,
   `search_code`, decision D6). `validate_action` resolves an id against
-  `KERNEL_GENERIC_ACTIONS ∪ pack.actions`, fail-closed on a miss.
+  `KERNEL_GENERIC_ACTIONS ∪ pack.actions`, fail-closed on a miss. `write_memory`
+  is kernel-executed — `KernelActionExecutor.execute` intercepts it before
+  `pack.dispatch`; a pack is never invoked and must not stub it (feature 002,
+  see below).
 - **Privileged statuses are pack-declared.** The kernel hardcodes none; each pack
   declares its own and the kernel binds that set into `EpisodicMemory` at session
   construction (decision D5). Empty = "this pack gates nothing", not "gate off".
@@ -208,3 +211,37 @@ stores only `system_prompt_id` / `system_prompt_hash` as a reference.
 **10000 items / 32 MiB**. Crossing it fails closed. The operator-facing remedy
 is to **complete the session and start a new one** — not to truncate, clamp, or
 silently drop items (FR-009b).
+
+## `write_memory` and memory observability (feature 002)
+
+`write_memory` is kernel machinery, not a pack capability: `KernelActionExecutor`
+recognizes the action id before `derive_ids`/`pack.dispatch` run and handles it
+itself, from a fixed record shape — never from `pack.dispatch`, and never from
+`action.params` directly. A pack declares nothing for it and is never asked to
+stub it.
+
+- **Provenance is kernel-set.** The written record always carries
+  `source_type=llm_inference`. Model params may supply only the note text (and
+  an optional bounded `target`); any attempt to set `source_type`, `hmac`,
+  `supersedes`, `status_change`, or another identity field is **rejected** at
+  validation, not silently stripped.
+- **Content is a plain note**, not a finding: `payload={"note": …}`,
+  `payload_kind="model_note"`. Reporting a finding stays on the existing
+  `persist_finding` path — a model does not call `write_memory` to report one.
+- **Not a transition.** `write_memory` has no `operation_id`, no
+  `commit_if_absent`, and does not move `session_revision`; two identical notes
+  are two distinct records, not a deduplicated one.
+- **Excluded from `SNAPSHOT_KINDS`.** A `model_note` is `llm_inference`-tier and
+  is deliberately never surfaced through `MemorySnapshot` — a model's own note
+  can never become a premise for a pack's projection.
+- **No new OOB gate.** `ActionClass.memory` still does not gain out-of-band
+  confirmation; that gate remains `write_execute` plus pack-declared privileged
+  statuses only.
+
+Separately, every successful `EpisodicMemory.write` — a model note, a finding
+persist, a chat turn, a session snapshot, anything durable — now fires a
+first-class `memory_write` live-trace event, distinct from `tool`/`reasoning`/
+`routing` events. The event carries metadata only (never a record body, never
+`hmac`/`seq`/`chain_prev`). The sink is bound once at `EpisodicMemory`
+construction; an absent sink, or one that raises, never blocks or reverses the
+write it would have reported.

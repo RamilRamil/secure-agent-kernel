@@ -5,7 +5,7 @@ import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Sequence
+from typing import TYPE_CHECKING, Callable, Sequence
 
 from sr_agent.memory import hmac as hmac_module
 from sr_agent.memory.canonical import canonical_bytes, canonical_digest
@@ -120,6 +120,7 @@ class EpisodicMemory:
         secret_key: bytes,
         privileged_statuses: frozenset[str] = frozenset(),
         lease: "WriterLease | None" = None,
+        event_sink: Callable[[dict], None] | None = None,
     ) -> None:
         self._root = memory_root
         self._secret_key = secret_key
@@ -128,6 +129,16 @@ class EpisodicMemory:
         # inspection paths need no writer role. Binding the lease is the
         # composition root's job for anything that appends.
         self._lease = lease
+        # Live-trace sink for `memory_write` events (002, D9.2). Bound the same
+        # way as `privileged_statuses` and `lease` — the composition root's job,
+        # not a call-site concern. Default `None`: a memory built without one is
+        # silent, not broken (FR-008).
+        self._event_sink = event_sink
+        # Re-entrancy guard for `_emit` (D9, T022). A sink that itself calls
+        # `write` on this instance would recurse into `_emit` -- this flag
+        # contains that bug rather than licensing it; the sink still MUST NOT
+        # write memory (contract).
+        self._emitting = False
         # Verified-log cache, valid only while this process holds the lease —
         # which is exactly what makes it sound: a lease owner is the project's
         # only writer, so the verified prefix cannot change underneath it. Without
@@ -236,7 +247,44 @@ class EpisodicMemory:
         self._write_head(record.project_id, path.stem, seq + 1, signature)
         self._extend_cache(record)
 
+        # Fires only after the append is durable — the event means "this record
+        # is on disk", never "this record is being written" (D9.2). Emitting
+        # any earlier would let a consumer observe a write that a later step in
+        # this method could still fail to complete.
+        self._emit_write(record)
+
         return record
+
+    def _emit_write(self, record: MemoryRecord) -> None:
+        """Fire the `memory_write` live-trace event (observability only).
+
+        Mirrors `AgentLoop._emit`: a missing or raising sink must never affect
+        the write, which has already happened by the time this runs.
+        """
+        if self._event_sink is None:
+            return
+        if self._emitting:
+            # A sink that calls `write` again would otherwise recurse back into
+            # this method. The guard exists to contain a broken observer, not
+            # to license one -- the contract still requires a sink not to write
+            # memory at all.
+            return
+        self._emitting = True
+        try:
+            self._event_sink({
+                "type": "memory_write",
+                "record_id": record.record_id,
+                "project_id": record.project_id,
+                "target": record.target,
+                "session_id": record.session_id,
+                "source_type": record.source_type.value,
+                "payload_kind": record.payload_kind,
+                "log_sequence": record.log_sequence,
+            })
+        except Exception:  # a broken observer must never break a write
+            logger.debug("event_sink raised on memory_write; ignoring", exc_info=True)
+        finally:
+            self._emitting = False
 
     def _require_lease(self, project_id: str, session_id: str) -> None:
         """Refuse a durable append that does not belong to the project's writer.

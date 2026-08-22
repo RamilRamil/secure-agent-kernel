@@ -32,6 +32,17 @@ MAX_SNAPSHOT_BYTES = 33554432   # 32 MiB of canonical encoded bytes
 
 # What a snapshot hands to the pack. `dispatch_payload` is what a pack SENDS;
 # these are what it RECEIVES back, and the two sets are deliberately different.
+#
+# `model_note` (feature 002) is ABSENT ON PURPOSE, not by oversight -- do not
+# "complete" this set. A note is `llm_inference`, the lowest tier in the source
+# hierarchy, and a snapshot is the input a pack builds its whole domain
+# projection from. Admitting a note here would let the model's own prose become
+# a premise for what the agent does next: a self-reinforcing loop across turns,
+# which is the retrospective-poisoning channel Principle IV closes for steering
+# knowledge. The kernel refuses to promote model output across a source-type
+# boundary; refusing to feed it into the pack's reducer is the same rule one
+# layer out. `pause_checkpoint` is absent for a different reason -- it is kernel
+# control state, not domain history.
 SNAPSHOT_KINDS = frozenset({"finding", "dispatch_commit", "external_response"})
 
 

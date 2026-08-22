@@ -78,9 +78,38 @@ _RESPONSE_SCHEMA = """```json
 ```"""
 
 
+def request_analysis_if_absent(
+    target: str,
+    context: str,
+    relay_dir: Path,
+    operation_id: str,
+) -> RelayRequest:
+    """Write a relay request keyed by `operation_id`, or adopt one already there.
+
+    The id is derived by the caller from the transition, so a crash after this
+    file exists and before a checkpoint is written still yields the same path
+    on restart (FR-021). A fresh random id would be a second request.
+    """
+    request_id = str(operation_id)
+    req_path = _request_path(relay_dir, request_id)
+    resp_path = _response_path(relay_dir, request_id)
+    if req_path.exists():
+        return RelayRequest(
+            request_id=request_id,
+            target=target,
+            request_path=req_path,
+            response_path=resp_path,
+            created_at="",
+        )
+    return _write_request(target, context, relay_dir, request_id)
+
+
 def request_analysis(target: str, context: str, relay_dir: Path) -> RelayRequest:
     """Write a human-readable analysis request packet for a target."""
-    request_id = str(uuid4())
+    return _write_request(target, context, relay_dir, str(uuid4()))
+
+
+def _write_request(target: str, context: str, relay_dir: Path, request_id: str) -> RelayRequest:
     created_at = datetime.now(timezone.utc).isoformat()
     req_path = _request_path(relay_dir, request_id)
     resp_path = _response_path(relay_dir, request_id)

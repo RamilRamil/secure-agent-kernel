@@ -159,11 +159,11 @@ left behind:
 - **Privileged statuses are pack-declared.** The kernel hardcodes none; each pack
   declares its own and the kernel binds that set into `EpisodicMemory` at session
   construction (decision D5). Empty = "this pack gates nothing", not "gate off".
-- **`PackContext` is domain-neutral:** `scope_root`, `sandbox`, `wrap_data`. PoC
-  state (`poc_dir`/`poc_generator`) left the context (decision D2) — a pack that
-  runs a write_execute PoC path carries its own. A transitional `__getattr__` shim
-  answers `ctx.audit_root` → `scope_root` with a `DeprecationWarning` until the
-  audit pack migrates (removed in PR-3).
+- **`PackContext` is domain-neutral:** `scope_root`, `sandbox`, `wrap_data`, plus
+  the feature-003 values `operation_id`, `transition_key`, and `scope_policy`
+  (a bound include set, not a memory handle). PoC state (`poc_dir`/`poc_generator`)
+  left the context (decision D2) — a pack that runs a write_execute PoC path
+  carries its own.
 - `orchestrator/loop.py` returns a domain-neutral `RunResult`; the read validators
   take `scope_root`.
 
@@ -194,3 +194,17 @@ with a pack. Requirements:
 See the downstream [araratsec-agent](https://github.com/RamilRamil/araratsec-agent) repo
 for the pack that demonstrates all of this, and [log.md](log.md) for this bundle's
 change history.
+
+## Dispatch, resume, and snapshot capacity (feature 003)
+
+Feature `003-dispatch-result-resume` makes chat and batch share one
+`KernelActionExecutor`. A pending dispatch writes exactly one `pause_checkpoint`
+and drops the writer lease; resume rebuilds the Action from that snapshot and
+does not ask the model to restate it. System prompt bytes come from a trusted
+`PromptRegistry` (pack-registered content, kernel-owned mechanism). A checkpoint
+stores only `system_prompt_id` / `system_prompt_hash` as a reference.
+
+`MemorySnapshot` is the pack's only read seam. Capacity is fixed:
+**10000 items / 32 MiB**. Crossing it fails closed. The operator-facing remedy
+is to **complete the session and start a new one** — not to truncate, clamp, or
+silently drop items (FR-009b).

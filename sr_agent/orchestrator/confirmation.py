@@ -46,10 +46,37 @@ def _request_path(confirmations_dir: Path, confirmation_id: str) -> Path:
     return confirmations_dir / f"{confirmation_id}.json"
 
 
+def request_confirmation_if_absent(
+    action: Action,
+    confirmations_dir: Path,
+    operation_id: str,
+) -> ConfirmationRequest:
+    """File a confirmation request under the derived operation id, or adopt it.
+
+    Same id before and after a crash (FR-021). A random UUID persisted only
+    after the file exists would still mint a second request on restart.
+    """
+    return _write_confirmation(action, confirmations_dir, str(operation_id))
+
+
 def request_confirmation(action: Action, confirmations_dir: Path) -> ConfirmationRequest:
     """Write a pending confirmation request for an irreversible action."""
+    return _write_confirmation(action, confirmations_dir, str(uuid4()))
+
+
+def _write_confirmation(
+    action: Action, confirmations_dir: Path, confirmation_id: str
+) -> ConfirmationRequest:
     confirmations_dir.mkdir(parents=True, exist_ok=True)
-    confirmation_id = str(uuid4())
+    path = _request_path(confirmations_dir, confirmation_id)
+    if path.exists():
+        return ConfirmationRequest(
+            confirmation_id=confirmation_id,
+            action_type=action.action_type,
+            params=action.params,
+            created_at="",
+            path=path,
+        )
     created_at = datetime.now(timezone.utc).isoformat()
 
     payload = {

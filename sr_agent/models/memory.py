@@ -89,6 +89,15 @@ class MemoryRecord(BaseModel):
     seq: int | None = None
     chain_prev: str | None = None
 
+    # Project-wide append order (feature 003, D37). A SECOND order, not a rename
+    # of `seq`: `seq` numbers a record within its own target file and restarts at
+    # 0 for every file, so it cannot say which of two records in different files
+    # was appended first. A snapshot watermark needs exactly that, because a
+    # session's findings and its dispatch commits live under different targets.
+    # 1-based, contiguous across the whole project, kernel-set at write time, and
+    # inside fields_for_hmac so it cannot be renumbered without the key.
+    log_sequence: int | None = None
+
     # Integrity — orchestrator signs at write time, verifies at load time.
     # Must be persisted to disk, so NO exclude=True here (that would strip the
     # signature from model_dump_json() and every record would load as unsigned).
@@ -114,5 +123,7 @@ class MemoryRecord(BaseModel):
         `chain_prev` is the *previous* record's signature and `seq` its position,
         so they are stripped for the same reason — surfacing them would put
         signature material back into model context through the side door.
+        `log_sequence` is stripped as kernel bookkeeping: a turn that could see
+        its own position in the log could reason, and then argue, about it.
         """
-        return self.model_dump(exclude={"hmac", "seq", "chain_prev"})
+        return self.model_dump(exclude={"hmac", "seq", "chain_prev", "log_sequence"})

@@ -20,14 +20,15 @@ from sr_agent.llm_core.schemas import AgentAction, EscalationTrigger
 from sr_agent.models.action import Action, ValidationResult
 from sr_agent.models.principal import Principal
 from sr_agent.models.memory import SourceType
+from sr_agent.models.session import ContentIdentity, PauseContinuation, SessionStatus
 
 # Per-turn tool-call budget (FR-006 / research R4). The chat *session* spans an
 # unbounded number of turns; any single turn's tool loop stops here.
 MAX_TOOL_CALLS_PER_TURN = 10
 
-SessionStatus = Literal[
-    "active", "paused_confirmation", "paused_relay", "blocked_local_unavailable"
-]
+# ChatSession projection stamped on save (FR-015). Load of a payload that
+# omits this field stays at None -- new required fields are not invented.
+CHAT_SESSION_PROJECTION_VERSION = 1
 
 # Trust tiers a model/tool-derived turn may carry — never human_input, never
 # llm_inference (Constitution I / FR-007). external_llm_output for the reasoning
@@ -99,6 +100,20 @@ class ChatSession(BaseModel):
     pending_relay_request_id: str | None = None
     turn_ids: list[str] = Field(default_factory=list)
     session_facts: SessionFacts | None = None
+
+    # Durable binding (feature 003). `scope_root` is a canonical absolute path
+    # stored as a string so a resume from another cwd cannot silently become
+    # Path("."). None means unbound: restore refuses rather than inventing a root.
+    scope_root: str | None = None
+    include: list[str] = Field(default_factory=list)
+    runtime_state_roots: list[str] = Field(default_factory=list)
+    content_identity: ContentIdentity | None = None
+    scope_generation: int = 0
+    session_revision: int = 0
+    writer_session_id: str | None = None
+    lease_mode: str | None = None
+    continuation: PauseContinuation | None = None
+    projection_version: int | None = None
 
     @model_validator(mode="after")
     def _project_binding(self) -> ChatSession:

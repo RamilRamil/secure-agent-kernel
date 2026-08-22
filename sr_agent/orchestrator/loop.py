@@ -14,11 +14,11 @@ from sr_agent.models.chat import MAX_TOOL_CALLS_PER_TURN, PoCStatusEvent, Routin
 from sr_agent.models.memory import MemoryRecord, SourceType
 from sr_agent.tools.sandbox import DockerSandbox
 from sr_agent.orchestrator.action import KERNEL_GENERIC_ACTIONS, validate_action
-from sr_agent.orchestrator.confirmation import (
-    ConfirmationStatus, check_confirmation, request_confirmation,
-)
 from sr_agent.orchestrator.context import build_messages, wrap_data
+from sr_agent.models.dispatch import DispatchStatus, PendingKind
+from sr_agent.orchestrator.executor import KernelActionExecutor, ResumeError
 from sr_agent.orchestrator.pack import PackContext
+from sr_agent.orchestrator.prompts import PromptRegistry, PromptRegistryError, prompt_digest
 from sr_agent.tools.registry import verify_all_hashes
 
 if TYPE_CHECKING:
@@ -28,6 +28,16 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 MAX_ITERATIONS = 50
+
+
+def _paused_status(result) -> str:
+    if result.pending is None:
+        return "paused_relay"
+    return {
+        PendingKind.external_response: "paused_relay",
+        PendingKind.human_confirmation: "paused_confirmation",
+        PendingKind.local_model_retry: "blocked_local_unavailable",
+    }[result.pending.kind]
 
 
 @dataclass
@@ -83,6 +93,7 @@ class OrchestratorLoop:
         event_sink: Callable[[dict], None] | None = None,
         discovery_model: str | None = None,
         chat_model: str | None = None,
+        prompt_registry: PromptRegistry | None = None,
     ) -> None:
         self._session = session
         self._memory = memory
@@ -106,6 +117,7 @@ class OrchestratorLoop:
         # pre-split default sizing behaviour for callers that don't inject.
         self._discovery_model = discovery_model
         self._chat_model = chat_model
+        self._prompt_registry = prompt_registry
         self._audit_client: ClaudeClient | None = None
         self._findings: list = []
 
@@ -121,9 +133,61 @@ class OrchestratorLoop:
         self._ctx = PackContext(
             scope_root=scope_root, sandbox=self._sandbox, wrap_data=wrap_data,
         )
+        self._executor = KernelActionExecutor(
+            memory=memory,
+            scope_root=scope_root,
+            pack_id=pack.name,
+            pack_contract_version=getattr(pack, "contract_version", "1"),
+            confirmations_dir=self._confirmations_dir,
+            sandbox=self._sandbox,
+        )
 
         # Verify tool descriptions haven't been tampered with
         verify_all_hashes()
+
+    def resolve_prompt(self, system_prompt: str) -> tuple[str, str, str]:
+        """Return (prompt_id, hash, body). Body comes from the registry when bound."""
+        if self._prompt_registry is None:
+            return ("inline", prompt_digest(system_prompt), system_prompt)
+        entry = self._prompt_registry.get(system_prompt)
+        return (entry.prompt_id, entry.digest, entry.body)
+
+    def resolve_resume_instruction(self) -> str:
+        """Load instruction bytes from the registry. Checkpoint hash is a check.
+
+        An attacker-controlled `system_prompt_hash` fails closed and is never
+        used as the system instruction (FR-020 / D18).
+        """
+        if self._prompt_registry is None:
+            raise ResumeError(
+                "No prompt registry; resume will not treat a checkpoint hash "
+                "as the system instruction."
+            )
+        cont = getattr(self._session, "continuation", None)
+        prompt_id = getattr(cont, "system_prompt_id", "") if cont else ""
+        prompt_hash = getattr(cont, "system_prompt_hash", "") if cont else ""
+        version = getattr(cont, "system_prompt_version", None) if cont else None
+        if not prompt_id:
+            ckpt = self._executor.latest_checkpoint(self._session)
+            if ckpt and ckpt.payload:
+                prompt_id = ckpt.payload.get("system_prompt_id") or ""
+                prompt_hash = ckpt.payload.get("system_prompt_hash") or ""
+                version = ckpt.payload.get("system_prompt_version")
+        if not prompt_id:
+            raise ResumeError(
+                "Checkpoint has no system_prompt_id; cannot load instruction "
+                "from the registry."
+            )
+        try:
+            return self._prompt_registry.load(prompt_id, prompt_hash, version)
+        except PromptRegistryError as exc:
+            raise ResumeError(str(exc)) from exc
+
+    @staticmethod
+    def _reenter_tool_body(body: str, action_type: str) -> str:
+        if body and "[DATA START" not in body:
+            return wrap_data(body, tool=action_type, path="dispatch")
+        return body
 
     def _emit(self, type: str, **payload) -> None:
         """Fire a live-trace event (observability only; never affects the loop)."""
@@ -138,6 +202,7 @@ class OrchestratorLoop:
         """Execute the ReAct loop until completion or resource limit."""
         iterations = 0
         last_tool_output: str | None = None
+        prompt_id, prompt_hash, instruction = self.resolve_prompt(system_prompt)
 
         while iterations < MAX_ITERATIONS:
             iterations += 1
@@ -146,7 +211,7 @@ class OrchestratorLoop:
             # ── Build context ────────────────────────────────────────────
             messages = build_messages(
                 session=self._session,
-                system_prompt=system_prompt,
+                system_prompt=instruction,
                 tool_output=last_tool_output,
                 model=self._discovery_model or "claude-opus-4-8",
             )
@@ -212,41 +277,19 @@ class OrchestratorLoop:
                 )
                 continue
 
-            # ── Out-of-band confirmation gate ────────────────────────────
-            # Irreversible WRITE_EXECUTE actions pause here. The agent writes a
-            # pending request and blocks; only a separate `sr-agent confirm`
-            # process may approve it. Rejection or timeout (fail-safe) cancels
-            # the action and feeds the outcome back as an observation.
-            if action.human_confirmation is False:
-                req = request_confirmation(action, self._confirmations_dir)
-                logger.info(
-                    "Pausing for out-of-band confirmation %s (action %s)",
-                    req.confirmation_id, action.action_type,
+            dispatched = self._executor.execute(
+                self._pack, self._session, action,
+                system_prompt_id=prompt_id, system_prompt_hash=prompt_hash,
+            )
+            if dispatched.status is DispatchStatus.pending:
+                return RunResult(
+                    session_id=self._session.session_id,
+                    findings=self._findings,
+                    iterations=iterations,
+                    completed=False,
+                    stop_reason=_paused_status(dispatched),
                 )
-                status = check_confirmation(
-                    req.confirmation_id,
-                    self._confirmations_dir,
-                    timeout_s=self._confirmation_timeout_s,
-                )
-                if status is not ConfirmationStatus.approved:
-                    logger.warning(
-                        "blocked_attempt: action %s confirmation %s was %s",
-                        action.action_type, req.confirmation_id, status.value,
-                    )
-                    last_tool_output = wrap_data(
-                        f"Action {action.action_type!r} was {status.value} "
-                        "via out-of-band confirmation — not executed.",
-                        tool="orchestrator",
-                        path="",
-                    )
-                    continue
-                action.human_confirmation = True  # approved out-of-band
-                logger.info(
-                    "Action %s approved out-of-band, proceeding", action.action_type
-                )
-
-            # ── Execute (stub — tools implemented in later phases) ───────
-            last_tool_output = self._pack.dispatch(action, self._ctx)
+            last_tool_output = self._reenter_tool_body(dispatched.body, action.action_type)
 
         return RunResult(
             session_id=self._session.session_id,
@@ -269,6 +312,7 @@ class OrchestratorLoop:
         """
         assert self._reasoning is not None, "run_turn requires a reasoning_provider"
 
+        prompt_id, prompt_hash, instruction = self.resolve_prompt(system_prompt)
         tool_calls = 0
         turn_findings: list[Finding] = []
         tool_summaries: list[str] = []
@@ -282,7 +326,7 @@ class OrchestratorLoop:
         # the per-turn tool-call count never exceeds the configured budget).
         while tool_calls < MAX_TOOL_CALLS_PER_TURN:
             messages = build_messages(
-                session=self._session, system_prompt=system_prompt,
+                session=self._session, system_prompt=instruction,
                 tool_output=last_tool_output, session_facts=facts,
                 model=self._chat_model,
             )
@@ -363,25 +407,23 @@ class OrchestratorLoop:
                 tool_calls += 1
                 continue
 
-            # Irreversible write_execute → file the OOB confirmation and PAUSE the
-            # turn (R8). No shortcut around the gate (Constitution II); the CLI
-            # resumes once the human approves out-of-band.
-            if action.human_confirmation is False:
-                req = request_confirmation(action, self._confirmations_dir)
-                logger.info(
-                    "chat turn paused for confirmation %s (action %s)",
-                    req.confirmation_id, action.action_type,
-                )
+            dispatched = self._executor.execute(
+                self._pack, self._session, action,
+                user_message=user_message, tool_calls_used=tool_calls,
+                system_prompt_id=prompt_id, system_prompt_hash=prompt_hash,
+            )
+            if dispatched.status is DispatchStatus.pending:
+                pending_id = dispatched.pending.correlation_id if dispatched.pending else None
                 return TurnResult(
-                    status="paused_confirmation", routing=routing,
-                    pending_confirmation_id=req.confirmation_id,
+                    status=_paused_status(dispatched),
+                    routing=routing,
+                    pending_confirmation_id=pending_id,
                     pending_action_type=action.action_type,
                     pending_action_params=dict(action.params),
+                    relay_request_id=pending_id if dispatched.pending and dispatched.pending.kind is PendingKind.external_response else None,
                     tool_calls=tool_calls, findings=turn_findings,
                 )
-
-            # Read-only / approved dispatch — result feeds the next iteration as DATA.
-            last_tool_output = self._pack.dispatch(action, self._ctx)
+            last_tool_output = self._reenter_tool_body(dispatched.body, action.action_type)
             detail = action.params.get("path") or action.params.get("pattern") or ""
             tool_summaries.append(f"{action.action_type} {detail}".strip())
             tool_calls += 1
@@ -396,6 +438,25 @@ class OrchestratorLoop:
             routing=routing, tool_calls=tool_calls, findings=turn_findings,
             tool_summaries=tool_summaries,
         )
+
+    def resume_turn(self, system_prompt: str) -> TurnResult:
+        """Continue a paused turn from its checkpoint (FR-011).
+
+        Must not call `run_turn(user_message)`: that would re-ask the model to
+        invent the in-flight action. The Action snapshot on the checkpoint is
+        the only source for re-dispatch.
+        """
+        if hasattr(self._session, "scope_root") and not getattr(self._session, "scope_root", None):
+            raise ResumeError(
+                "Session has no scope_root; resume is refused rather than "
+                "defaulting to '.'."
+            )
+        if self._prompt_registry is not None:
+            self.resolve_resume_instruction()
+        result = self._executor.resume(self._pack, self._session)
+        if result.status is DispatchStatus.pending:
+            return TurnResult(status=_paused_status(result), answer=result.body)
+        return TurnResult(status="completed", answer=result.body)
 
     def execute_confirmed(self, action: Action) -> tuple[str, PoCStatusEvent | None]:
         """Execute a write_execute action AFTER out-of-band approval (US2/R9).

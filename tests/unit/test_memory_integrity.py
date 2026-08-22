@@ -69,3 +69,33 @@ def test_missing_hmac_dropped(memory):
     _rewrite_first_line(memory, lambda d: d.pop("hmac", None))
     assert memory.load("proj1", "Vault.sol") == []
     assert memory.verify_integrity("proj1").invalid == 1
+
+
+# ── Records predating the log_sequence field (feature 003, FR-006b / D39) ────
+# Adding a kernel-set field to the signed shape means records written before it
+# no longer verify. `004` already settled what happens then, and this feature
+# adopts that verbatim instead of adding a version-aware reader: a re-signing
+# migration is REJECTED, because it would stamp a valid signature onto records
+# whose provenance can no longer be checked -- which is precisely the forgery the
+# signature exists to prevent. The cost is accepted and named: a session that
+# predates the change is not resumable, and is completed and started anew.
+
+
+def test_records_without_log_sequence_read_as_empty(memory):
+    memory.write(_make_record())
+    _rewrite_first_line(memory, lambda d: d.pop("log_sequence", None))
+    assert memory.load("proj1", "Vault.sol") == []
+
+
+def test_legacy_target_starts_a_fresh_chain_and_nothing_is_re_signed(memory, tmp_path):
+    """The store recovers by moving forward, never by re-signing the past."""
+    memory.write(_make_record())
+    _rewrite_first_line(memory, lambda d: d.pop("log_sequence", None))
+    (tmp_path / "proj1" / "_chain_head.json").unlink()
+
+    written = memory.write(_make_record("H-2"))
+
+    assert (written.seq, written.log_sequence) == (0, 1)
+    assert [r.finding["finding_id"] for r in memory.load("proj1", "Vault.sol")] == ["H-2"]
+    # The unverifiable line is still on disk, untouched -- not repaired, not removed.
+    assert memory.verify_integrity("proj1").invalid == 1

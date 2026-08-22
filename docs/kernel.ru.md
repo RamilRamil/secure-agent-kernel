@@ -193,3 +193,15 @@ Callable'ы пака получают только узкий `PackContext` — 
 Пак, демонстрирующий всё это, — в downstream-репозитории
 [araratsec-agent](https://github.com/RamilRamil/araratsec-agent), а историю изменений
 этого бандла см. в [log.md](log.md).
+
+## Dispatch, resume и лимит снимка (feature 003)
+
+Фича `003-dispatch-result-resume` проводит chat и batch через один
+`KernelActionExecutor`. Pending пишет ровно один `pause_checkpoint` и снимает
+writer lease; resume собирает Action из снимка и не просит модель повторить его.
+Байты system prompt берутся из доверенного `PromptRegistry`. В чекпоинте только
+`system_prompt_id` / `system_prompt_hash` как ссылка.
+
+`MemorySnapshot` — единственный read seam пака. Лимит: **10000 записей / 32 MiB**.
+Превышение — fail closed. Оператор **завершает сессию и начинает новую**, а не
+обрезает снимок (FR-009b).

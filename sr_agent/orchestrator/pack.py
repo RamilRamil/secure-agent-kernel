@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from sr_agent.guardrails.escalation import EscalationResult
     from sr_agent.llm_core.schemas import AgentAction
     from sr_agent.models.action import Action, ActionClass
+    from sr_agent.models.dispatch import DispatchResult
     from sr_agent.tools.registry import ToolDefinition
     from sr_agent.tools.sandbox import DockerSandbox
 
@@ -64,10 +65,22 @@ class PackContext:
     PoC state is NOT here (decision D2): a PoC output directory / body generator
     is a pack-side concern, so a pack that runs a write_execute PoC path carries
     its own — the kernel context stays task-agnostic (no `poc_dir`/`poc_generator`).
+
+    `operation_id` / `transition_key` (feature 003) are read-only kernel-derived
+    identifiers, present so a pack can make an external effect idempotent under
+    the same identity the kernel commits under. They are NOT trusted back: a
+    projection reads the identity off the kernel-authored envelope, never off a
+    pack-supplied body.
     """
     scope_root: "Path"
     sandbox: "DockerSandbox"
     wrap_data: Callable[..., str]
+    operation_id: str | None = None
+    transition_key: str | None = None
+    # Bound include set for kernel read tools (D20). A value, not a handle:
+    # knowing the policy grants no write capability. None is the test shim;
+    # production dispatch on a bound session supplies the policy.
+    scope_policy: object | None = None
 
 
 @dataclass(frozen=True)
@@ -82,8 +95,29 @@ class CapabilityPack:
     tools: Sequence["ToolDefinition"]
     privileged_statuses: frozenset[str]
     reasoning_prompt: str
-    dispatch: Callable[["Action", PackContext], str]
+    # Feature 003: the persistable contract is structured, not an opaque string.
+    # `adapt_legacy_dispatch` wraps string-returning fixture packs for tests;
+    # production packs return `DispatchResult` so the kernel can persist what the
+    # pack computed without the pack ever holding a memory handle.
+    dispatch: Callable[["Action", PackContext], "DispatchResult"]
     execute_confirmed: Callable[["Action", PackContext], "tuple[str, object | None]"]
     persist_finding: Callable[[dict, PackContext], "object | None"]
     domain_escalation: Callable[..., "EscalationResult | None"]
     signal_from: Callable[["AgentAction"], "object | None"]
+
+
+def adapt_legacy_dispatch(
+    dispatch: "Callable[[Action, PackContext], str]",
+) -> "Callable[[Action, PackContext], DispatchResult]":
+    """Wrap a string-returning dispatch as a payload-less `DispatchResult`.
+
+    Test-only, and payload-less on purpose: a string carries no structure, so
+    there is nothing the kernel could honestly persist from it. Inventing a
+    payload here would manufacture provenance for output that never had any.
+    """
+    from sr_agent.models.dispatch import DispatchResult, DispatchStatus
+
+    def adapted(action: "Action", ctx: PackContext) -> "DispatchResult":
+        return DispatchResult(status=DispatchStatus.ran, body=dispatch(action, ctx))
+
+    return adapted

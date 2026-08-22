@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -31,6 +32,21 @@ def wrap_data(content: str, tool: str, path: str, flags: list[str] | None = None
     flags_str = ",".join(flags) if flags else ""
     header = _DATA_START.format(tool=tool, path=path, flags=flags_str)
     return f"{header}\n{content}\n{_DATA_END}"
+
+
+def wrap_snapshot_item(body: dict, kind: str) -> str:
+    """A MemorySnapshot body re-enters the model as DATA, never as instruction."""
+    return wrap_data(json.dumps(body, ensure_ascii=True), tool="memory_snapshot", path=kind)
+
+
+def wrap_external_response(body: dict) -> str:
+    """An ingested external_response body re-enters as DATA (FR-017)."""
+    return wrap_data(json.dumps(body, ensure_ascii=True), tool="external_response", path="body")
+
+
+def wrap_checkpoint_field(content: str, field: str) -> str:
+    """Checkpoint fields that re-enter the model (`user_message`, last tool body)."""
+    return wrap_data(content, tool="pause_checkpoint", path=field)
 
 
 def _estimate_tokens(text: str) -> int:

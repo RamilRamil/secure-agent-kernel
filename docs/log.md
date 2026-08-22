@@ -2,6 +2,14 @@
 
 Chronological history for the `docs/` OKF bundle, newest first (OKF v0.2 reserved `log.md`).
 
+## 2026-08-22
+
+- **Feature 003 — dispatch / result / resume.** Documented the shared
+  `KernelActionExecutor`, the trusted prompt registry, and the snapshot
+  capacity envelope (10000 items / 32 MiB). Over-capacity is fail-closed;
+  the operator completes the session and starts a new one (FR-009b). See
+  [kernel.md](kernel.md).
+
 ## 2026-08-08
 
 - **Completed the parity set** — added the five deferred concepts (EN + RU): the

@@ -128,7 +128,11 @@ def dispatch(action: "Action", ctx: "PackContext") -> str:
     params = action.params
     try:
         if at == "read_file":
-            content = read_file(params["path"], ctx.scope_root)
+            content = read_file(
+                params["path"],
+                ctx.scope_root,
+                policy=getattr(ctx, "scope_policy", None),
+            )
             return ctx.wrap_data(content, tool="read_file", path=str(params.get("path", "")))
     except ReadOnlyToolError as e:
         return ctx.wrap_data(f"TOOL ERROR: {e}", tool=at, path="")

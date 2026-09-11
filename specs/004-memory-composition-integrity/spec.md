@@ -72,6 +72,10 @@ design cites as its model, is structured the way it is for this reason.
 
 - Detecting a rollback of the store to a previously-valid state (file **and** head restored
   together from an old backup). That needs a monotonic anchor outside the memory directory.
+  **Closed by feature 006** (`specs/006-memory-rollback-anchor/`): a per-project HMAC-signed
+  watermark held outside `memory_root` fails closed when the log is shorter than a point it
+  provably once passed. The residual — an adversary who also controls the anchor location —
+  stays out of scope there.
 - Semantic deduplication of restated facts (FR-009).
 - Extending out-of-band confirmation to the memory class.
 

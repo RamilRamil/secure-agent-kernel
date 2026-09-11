@@ -29,6 +29,13 @@ class KernelConfig:
 
     # Storage
     memory_root: Path
+    # Rollback anchor (feature 006) — monotonic per-project watermark held OUTSIDE
+    # memory_root, on an access boundary the memory-write adversary cannot cross.
+    # None (unset) leaves the rollback guard inert (mechanism vs. wiring, like the
+    # writer lease). A writer-role deployment SHOULD set SR_ANCHOR_ROOT; the guarantee
+    # is only as strong as the anchor_root vs memory_root access separation the
+    # operator provides. MUST NOT be inside memory_root (EpisodicMemory enforces this).
+    anchor_root: Path | None
     knowledge_root: Path
     confirmations_root: Path
     relay_root: Path
@@ -63,6 +70,9 @@ def load_kernel_config() -> KernelConfig:
         openrouter_api_key=os.environ.get("OPENROUTER_API_KEY", ""),
         secret_key=bytes.fromhex(_require("SR_SECRET_KEY")),
         memory_root=Path(os.environ.get("SR_MEMORY_ROOT", "./memory")),
+        anchor_root=(
+            Path(os.environ["SR_ANCHOR_ROOT"]) if os.environ.get("SR_ANCHOR_ROOT") else None
+        ),
         knowledge_root=Path(os.environ.get("SR_KNOWLEDGE_ROOT", "./knowledge")),
         confirmations_root=Path(os.environ.get("SR_CONFIRMATIONS_ROOT", "./confirmations")),
         relay_root=Path(os.environ.get("SR_RELAY_ROOT", "./relay")),

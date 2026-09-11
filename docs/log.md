@@ -2,6 +2,16 @@
 
 Chronological history for the `docs/` OKF bundle, newest first (OKF v0.2 reserved `log.md`).
 
+## 2026-09-11
+
+- **Feature 006 — rollback anchor.** Documented the whole-directory rollback guard: a
+  per-project HMAC-signed watermark held outside `memory_root` (`SR_ANCHOR_ROOT`) that
+  fails `snapshot`/`write` closed when the log is shorter than a point it provably once
+  passed. Updated [kernel.md](kernel.md) (mechanism 3) and marked the rollback item in
+  `specs/004-memory-composition-integrity/spec.md` "Out of scope" as closed. The guarantee
+  depends on the operator's `anchor_root` vs `memory_root` access separation; the residual
+  adversary who controls the anchor location stays out of scope.
+
 ## 2026-08-22
 
 - **Feature 003 — dispatch / result / resume.** Documented the shared

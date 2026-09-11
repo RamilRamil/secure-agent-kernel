@@ -6,7 +6,7 @@
 
 **Created**: 2026-08-21 · **Revised**: 2026-08-22 (revision 11)
 
-**Status**: Draft (revision 11)
+**Status**: Implemented and merged (`3675bac`; specified at revision 11)
 
 **Paired feature**: araratsec-agent `004-audit-loop-methodology` (consumes this contract for stage events, roadmap projection, and honest resume). Kernel `plan.md` / `tasks.md` MUST NOT start until this revision is accepted. Pack 004 `plan.md` / `tasks.md` wait on this feature's **implementation**.
 

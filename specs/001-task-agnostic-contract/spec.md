@@ -8,7 +8,7 @@
 
 **Created**: 2026-08-09
 
-**Status**: Draft
+**Status**: Implemented and merged (PR-1 `e217521` #2 · PR-3 shim removal `1f2373d` #3)
 
 **Input**: User description: "The kernel package (`sr_agent`) is meant to be the task-agnostic, memory-injection-resistant core, but it still hardcodes smart-contract-audit vocabulary that Constitution Principle III assigns to a capability pack: the concrete `ActionType` enum (`run_slither`, `run_mythril`, `run_auditor_skill`, `write_poc`, `deploy_test_contract`, …), the domain privileged-status set (`audit_complete`), audit tools (`TOOL_REGISTRY`), per-action validation (`_validate_params`), plus audit-flavored names (`audit_root`, `AuditResult`, `PackContext.poc_dir`/`poc_generator`) and an audit default system prompt. Make the kernel's action taxonomy open, move the domain metadata out to the pack through the existing `CapabilityPack` surface, rename the residual audit vocabulary to task-agnostic names, and pin the result with a new boundary test — without weakening any kernel guarantee."
 

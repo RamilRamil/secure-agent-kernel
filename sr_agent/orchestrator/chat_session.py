@@ -10,6 +10,12 @@ Trust posture (R6/R12): the ChatSession snapshot, its SessionFacts, and every
 PoCStatusEvent are ORCHESTRATOR-authored (`tool_output` tier). Only ChatTurns
 carry the reasoning provider's `external_llm_output` tier. Nothing here is ever
 written from parsed model output directly into facts/status.
+
+The read APIs here (`load_session`, `load_turns`, `render_roadmap`) are the
+kernel's public history-reconstruction seam for an out-of-process caller — the
+audit pack / `sr-agent` CLI in Repo B — and have no in-repo composition root
+wiring them to a caller; they are exercised directly by tests, not reached
+through a loop. See `tests/unit/test_history_reconstruction_cache.py`.
 """
 from __future__ import annotations
 

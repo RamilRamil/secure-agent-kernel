@@ -88,4 +88,11 @@ design cites as its model, is structured the way it is for this reason.
   before the migration would come out of it authenticated.
 - **The extra read cost of project-scoped resolution is accepted.** `load()` now walks the
   project directory on every call, and `chat_session` calls it three times per history
-  reconstruction. Correctness first; revisit if it becomes measurable.
+  reconstruction (`load_turns` → `load()` + `load_session()` → `load()`, plus `render_roadmap`
+  → `load()`). Correctness first; revisit if it becomes measurable. Measured: under a held
+  writer lease only the FIRST of those reads walks the directory — the 2nd and 3rd are served
+  from the verified-log cache (`_ProjectView`), so the per-reconstruction cost is one scan,
+  not three. Pinned by `test_history_reconstruction_reuses_project_cache_across_reads` in
+  `tests/unit/test_history_reconstruction_cache.py`, which fails if the cache stops absorbing
+  the repeat reads. Without a lease (a reader-role memory) the cache is disabled by design and
+  all three reads hit disk.

@@ -1,4 +1,10 @@
-"""US4 / FR-001 (kernel side) — KernelConfig owns exactly the 13 kernel fields.
+"""US4 / FR-001 (kernel side) — KernelConfig owns exactly the kernel fields.
+
+Feature 006 added `anchor_root` (rollback anchor, a memory-integrity field like
+`memory_root`/`secret_key`) — a genuinely kernel-owned, task-agnostic field, NOT audit
+or routing. The kernel set is therefore 14; the cross-seam total is 23. The partition
+guard below still forbids any audit/routing field from leaking in.
+
 
 Written test-first (Phase A): imports `KernelConfig`, which does not exist yet, so
 it is RED until T009 lands. This is the KERNEL-side half of the ownership check —
@@ -13,10 +19,11 @@ from __future__ import annotations
 
 import dataclasses
 
-KERNEL_13 = {
+KERNEL_14 = {
     "anthropic_api_key", "gemini_api_key", "openrouter_api_key",
     "secret_key",
-    "memory_root", "knowledge_root", "confirmations_root", "relay_root", "lessons_root",
+    "memory_root", "anchor_root", "knowledge_root", "confirmations_root", "relay_root",
+    "lessons_root",
     "langfuse_secret_key", "langfuse_public_key", "langfuse_host", "langfuse_enabled",
 }
 AUDIT_5 = {
@@ -30,22 +37,22 @@ def _field_names(cls) -> set[str]:
     return {f.name for f in dataclasses.fields(cls)}
 
 
-def test_reference_sets_are_disjoint_and_total_22() -> None:
+def test_reference_sets_are_disjoint_and_total_23() -> None:
     """Sanity on the reference data this file asserts against."""
-    assert len(KERNEL_13 | AUDIT_5 | ROLES_4) == 22
-    assert KERNEL_13.isdisjoint(AUDIT_5)
-    assert KERNEL_13.isdisjoint(ROLES_4)
+    assert len(KERNEL_14 | AUDIT_5 | ROLES_4) == 23
+    assert KERNEL_14.isdisjoint(AUDIT_5)
+    assert KERNEL_14.isdisjoint(ROLES_4)
     assert AUDIT_5.isdisjoint(ROLES_4)
 
 
-def test_kernel_config_holds_exactly_the_13_kernel_fields() -> None:
+def test_kernel_config_holds_exactly_the_14_kernel_fields() -> None:
     from sr_agent.config import KernelConfig
 
     fields = _field_names(KernelConfig)
-    assert fields == KERNEL_13, (
-        f"KernelConfig must hold exactly the 13 kernel fields.\n"
-        f"  unexpected (audit/routing leaked into kernel): {sorted(fields - KERNEL_13)}\n"
-        f"  missing: {sorted(KERNEL_13 - fields)}"
+    assert fields == KERNEL_14, (
+        f"KernelConfig must hold exactly the 14 kernel fields.\n"
+        f"  unexpected (audit/routing leaked into kernel): {sorted(fields - KERNEL_14)}\n"
+        f"  missing: {sorted(KERNEL_14 - fields)}"
     )
 
 

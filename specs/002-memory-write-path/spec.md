@@ -6,7 +6,7 @@
 
 **Created**: 2026-08-10
 
-**Status**: Draft
+**Status**: Implemented and merged (`a33ee04`, T037 included)
 
 **Depends on**: `001-task-agnostic-contract` (keeps `write_memory` in `KERNEL_GENERIC_ACTIONS`; this feature resolves how that id is *executed* and how durable writes are *observed*)
 

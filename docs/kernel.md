@@ -78,7 +78,13 @@ architectural controls drive that toward ≤5% — by construction, not by promp
    (`memory/hmac.py`, `memory/episodic.py`); records that fail verification are
    silently dropped before reaching the model. No update/delete — corrections are new
    records that `supersede`, and only `human_input` may issue them or set privileged
-   statuses.
+   statuses. The record set (not just each record) is chained and attested by a signed
+   `_chain_head.json`, so removal and tail-truncation are detectable (feature 004); a
+   whole-directory **rollback** to an older signed copy is caught by a per-project
+   HMAC-signed watermark held **outside** `memory_root` (`SR_ANCHOR_ROOT`, feature 006) —
+   `snapshot`/`write` fail closed when the log is shorter than a point it provably once
+   passed. The guarantee is as strong as the operator's `anchor_root` vs `memory_root`
+   access separation; unset leaves the rollback guard inert.
 4. **Out-of-band confirmation gate** — an irreversible/privileged action pauses the
    run and requires a deliberate approval through a *separate* channel. This is
    **kernel-derived** from `action.action_class == write_execute`

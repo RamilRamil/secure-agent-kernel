@@ -47,6 +47,11 @@ class IntegrityReport:
     # were ALTERED, this counts files whose record SET no longer matches what
     # was signed — the removal case, which no per-record count can show.
     chain_breaks: dict[str, str] = field(default_factory=dict)
+    # project_id -> why the store's watermark exceeds its log (feature 006). A
+    # rollback is a project-level fact, not a per-target one, and is kept separate
+    # from chain_breaks: the chain is intact, the store is an older whole copy of
+    # itself. Populated only when an anchor is configured for the scan.
+    rollbacks: dict[str, str] = field(default_factory=dict)
 
     @property
     def has_invalid(self) -> bool:
@@ -55,6 +60,10 @@ class IntegrityReport:
     @property
     def has_chain_break(self) -> bool:
         return bool(self.chain_breaks)
+
+    @property
+    def has_rollback(self) -> bool:
+        return bool(self.rollbacks)
 
 
 class MemoryCompositionBreak(Exception):
@@ -77,6 +86,19 @@ class SnapshotCapacityExceeded(Exception):
     pass
 
 
+class MemoryRollbackDetected(MemoryWriteError):
+    """Raised when the store's recorded high-water mark exceeds the log it now holds.
+
+    The signature of a whole-directory rollback (feature 006): every record still
+    verifies and the 004 chain still reconstructs, because it is a genuinely-signed
+    older copy of the store — but the out-of-store anchor, which the memory-write
+    adversary cannot reach, records a watermark the restored log no longer reaches.
+    Fail-closed on both the read seam and the write path; the kernel never guesses
+    which side is authoritative.
+    """
+    pass
+
+
 @dataclass
 class _ProjectView:
     """The verified project log plus the two summaries the append path needs.
@@ -92,6 +114,10 @@ class _ProjectView:
     # Whether the sequence set has been checked for duplicates and gaps. Done
     # once per rescan and on the write path only, so a read never fails on it.
     sequences_validated: bool = False
+    # The verified rollback watermark (feature 006), read once when the view is
+    # built and advanced incrementally on append — so the rollback check does not
+    # re-read the anchor file on every read while the lease is held (D006-4).
+    anchor: int | None = None
 
 
 class ExternalResponseConflict(MemoryWriteError):
@@ -121,9 +147,28 @@ class EpisodicMemory:
         privileged_statuses: frozenset[str] = frozenset(),
         lease: "WriterLease | None" = None,
         event_sink: Callable[[dict], None] | None = None,
+        anchor_root: Path | None = None,
     ) -> None:
         self._root = memory_root
         self._secret_key = secret_key
+        # Rollback anchor root (feature 006, D006-1). Bound at construction like
+        # `lease` / `privileged_statuses`: the composition root places it OUTSIDE
+        # memory_root, on an access boundary the memory-write adversary cannot cross.
+        # None ⇒ the rollback guard is inert (mechanism vs. wiring). It MUST NOT be
+        # inside memory_root — otherwise the same adversary who can roll back the
+        # store could roll back its watermark too, silently voiding the guarantee.
+        if anchor_root is not None:
+            try:
+                inside = anchor_root.resolve().is_relative_to(memory_root.resolve())
+            except AttributeError:  # pragma: no cover - Python < 3.9 has no is_relative_to
+                inside = str(anchor_root.resolve()).startswith(str(memory_root.resolve()))
+            if inside:
+                raise ValueError(
+                    f"anchor_root {anchor_root!r} must be OUTSIDE memory_root "
+                    f"{memory_root!r}: an anchor the memory-write adversary can reach "
+                    "provides no rollback protection (feature 006, D006-1)."
+                )
+        self._anchor_root = anchor_root
         # Bound at construction like `privileged_statuses` (D5). A memory built
         # without a lease is a READER: `verify_integrity`, `load`, and the CLI
         # inspection paths need no writer role. Binding the lease is the
@@ -200,6 +245,102 @@ class EpisodicMemory:
         tmp.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
         tmp.replace(path)   # atomic swap: never leave a half-written head
 
+    # ── Rollback anchor (feature 006) ───────────────────────────────────────
+    # One signed file per project, OUTSIDE memory_root, recording the highest
+    # project-wide log_sequence ever observed. Same signing primitive and same
+    # "signed sidecar the record globs must never pick up" pattern as the chain
+    # head and the writer lease — the only difference that matters is where it
+    # lives: a place the memory-write adversary cannot reach.
+
+    def _anchor_path(self, project_id: str) -> Path:
+        return self._anchor_root / f"{project_id}.rollback.json"
+
+    def _read_anchor(self, project_id: str) -> int | None:
+        """Return the verified watermark, or None if the guard is off/absent/forged.
+
+        A file that does not verify is treated as ABSENT, never as an authoritative
+        value: a keyless adversary must not be able to inflate the watermark and lock
+        a project out. None also means "not yet anchored" (pre-006 / fresh), which is
+        the not-a-rollback case (D006-3).
+        """
+        if self._anchor_root is None:
+            return None
+        path = self._anchor_path(project_id)
+        if not path.exists():
+            return None
+        try:
+            doc = json.loads(path.read_text(encoding="utf-8"))
+            signature = doc.pop("hmac", None)
+        except Exception:
+            return None
+        if not isinstance(signature, str):
+            return None
+        if not hmac_module.verify(doc, signature, self._secret_key):
+            return None
+        try:
+            if doc.get("project_id") != project_id:
+                return None
+            return int(doc["watermark"])
+        except Exception:
+            return None
+
+    def _write_anchor(self, project_id: str, watermark: int) -> None:
+        if self._anchor_root is None:
+            return
+        doc = {"project_id": project_id, "watermark": int(watermark)}
+        payload = dict(doc, hmac=hmac_module.sign(doc, self._secret_key))
+        path = self._anchor_path(project_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+        tmp.replace(path)   # atomic swap: never leave a half-written anchor
+
+    def _current_anchor(self, project_id: str) -> int | None:
+        """The verified watermark, from the cached view while the lease is held.
+
+        Falls back to a file read when there is no usable view — which is also the
+        only time the anchor could have changed under us (D006-4).
+        """
+        view = self._cache.get(project_id) if self._cache_is_usable(project_id) else None
+        if view is not None:
+            return view.anchor
+        return self._read_anchor(project_id)
+
+    def _bump_anchor(self, project_id: str, new_max: int) -> None:
+        """Advance the watermark to at least `new_max`. Monotonic — never decreases.
+
+        Called as the LAST durable step of a write (after the record and head are on
+        disk), so a crash can only ever leave the anchor BEHIND the log, never ahead —
+        which is the tolerated `V < L` case, never a false rollback (D006-5).
+        """
+        if self._anchor_root is None:
+            return
+        current = self._current_anchor(project_id) or 0
+        if new_max > current:
+            self._write_anchor(project_id, new_max)
+            view = self._cache.get(project_id)
+            if view is not None:
+                view.anchor = new_max
+
+    def _check_rollback(self, project_id: str, log_max: int) -> None:
+        """Fail closed when the anchor watermark exceeds the log it now holds.
+
+        The asymmetric rule (feature 006, D006-3): `V > L` is a rollback (the log got
+        shorter than a point it provably once passed) and fails closed; `V <= L` and a
+        missing/unverifiable anchor (`V = None`, not yet anchored) both proceed. A
+        missing anchor is never the in-scope adversary's doing — it is outside their
+        reach — so it is the pre-006/fresh case, not tampering.
+        """
+        watermark = self._current_anchor(project_id)
+        if watermark is not None and watermark > log_max:
+            self._report_rollback(project_id, watermark, log_max)
+            raise MemoryRollbackDetected(
+                f"Refusing to serve project {project_id!r}: the store's recorded "
+                f"high-water mark ({watermark}) exceeds the log it now contains "
+                f"({log_max}). This is consistent with the memory directory being "
+                "restored from an older backup. Run `sr-agent memory verify`."
+            )
+
     def write(
         self,
         record: MemoryRecord,
@@ -229,6 +370,11 @@ class EpisodicMemory:
         self._recover_torn_tails(record.project_id)
 
         log_sequence = self._next_log_sequence(record.project_id)
+        # Refuse to append onto a rolled-back log (feature 006, FR-007): the next
+        # sequence is current_max + 1, so current_max is log_sequence - 1. If the
+        # anchor exceeds it the store was restored older; appending here would sign a
+        # record onto a truncated history and re-run an effect the log already recorded.
+        self._check_rollback(record.project_id, log_sequence - 1)
         seq, chain_prev = self._chain_tip(path)
 
         # Position, back-link, and project-wide order are kernel-set and go
@@ -245,6 +391,10 @@ class EpisodicMemory:
 
         self._append_durably(path, record.model_dump_json() + "\n")
         self._write_head(record.project_id, path.stem, seq + 1, signature)
+        # Advance the rollback anchor LAST (feature 006, D006-5): the record and head
+        # are already durable, so a crash here leaves the anchor lagging (tolerated),
+        # never ahead of the log (a false rollback).
+        self._bump_anchor(record.project_id, record.log_sequence or 0)
         self._extend_cache(record)
 
         # Fires only after the append is durable — the event means "this record
@@ -774,6 +924,7 @@ class EpisodicMemory:
                 records=records,
                 tips=tips,
                 max_log_sequence=max((r.log_sequence or 0 for r in records), default=0),
+                anchor=self._read_anchor(project_id),
             )
         return records, None
 
@@ -816,9 +967,14 @@ class EpisodicMemory:
                 "`sr-agent memory verify`."
             )
 
+        # 1b. Rollback check (feature 006, FR-007): the anchor watermark must not
+        #     exceed the log we just authenticated. A whole-directory rollback passes
+        #     step 1 (it is a genuinely-signed older store) and is caught only here.
+        current_max = max((r.log_sequence or 0 for r in records), default=0)
+        self._check_rollback(project_id, current_max)
+
         # 2. Pin the watermark. A future value is refused, never clamped: clamping
         #    would make one watermark denote a growing history.
-        current_max = max((r.log_sequence or 0 for r in records), default=0)
         if as_of_sequence is None:
             as_of_sequence = current_max
         elif as_of_sequence < 0 or as_of_sequence > current_max:
@@ -1060,6 +1216,21 @@ class EpisodicMemory:
             path.name, reason,
         )
 
+    def _report_rollback(self, project_id: str, watermark: int, log_max: int) -> None:
+        """Operator-channel signal for a rollback (feature 006). Fail-closed follows.
+
+        A composition-class signal, like 004's chain break and distinct from the silent
+        signature drop: it fires only on validly-signed material disagreeing about how
+        far the log has reached, carries no tamper-oracle, and goes to the operator log,
+        never into model context (FR-009).
+        """
+        logger.warning(
+            "memory rollback detected for project %s: anchor watermark %d exceeds log "
+            "max %d — store withheld (fail-closed); the memory directory may have been "
+            "restored from an older backup. Run `sr-agent memory verify`.",
+            project_id, watermark, log_max,
+        )
+
     def verify_integrity(self, project_id: str) -> IntegrityReport:
         """Scan all records for a project and count valid vs tampered.
 
@@ -1104,6 +1275,21 @@ class EpisodicMemory:
             _, break_reason = self._read_authenticated(path)
             if break_reason is not None:
                 report.chain_breaks[path.stem] = break_reason
+
+        # Rollback (feature 006): the anchor watermark exceeds the log the project now
+        # holds. Only meaningful when the chain still reconstructs — a broken chain is
+        # already reported above and its log_max is not trustworthy. Project-level,
+        # kept out of chain_breaks.
+        if not report.chain_breaks and self._anchor_root is not None:
+            records, break_reason = self._authenticated_project(project_id)
+            if break_reason is None:
+                log_max = max((r.log_sequence or 0 for r in records), default=0)
+                watermark = self._read_anchor(project_id)
+                if watermark is not None and watermark > log_max:
+                    report.rollbacks[project_id] = (
+                        f"anchor watermark {watermark} exceeds log max {log_max}"
+                    )
+                    self._report_rollback(project_id, watermark, log_max)
 
         return report
 
